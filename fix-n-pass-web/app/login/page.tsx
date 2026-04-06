@@ -2,14 +2,14 @@
 
 import { useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { useRouter } from "next/navigation"; // 페이지 이동을 위한 훅 추가
+import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const router = useRouter(); // 라우터 객체 초기화
+  const router = useRouter();
 
   // 로그인 처리
   const handleLogin = async (e: React.FormEvent) => {
@@ -26,7 +26,6 @@ export default function LoginPage() {
       setMessage("로그인 실패: 이메일이나 비밀번호를 확인해주세요.");
     } else {
       setMessage("로그인 성공! 메인 화면으로 이동합니다...");
-      // 로그인 성공 시 1초 뒤 메인 화면(/)으로 강제 이동
       setTimeout(() => {
         router.push("/");
       }, 1000);
@@ -48,10 +47,10 @@ export default function LoginPage() {
     if (error) {
       setMessage("회원가입 실패: " + error.message);
     } else {
-      setMessage("회원가입 성공! 자동 로그인 및 이동 중...");
-      // 가입 성공 시(현재 인증 꺼둠) 1초 뒤 메인 화면으로 강제 이동
+      setMessage("회원가입 성공! 역할 설정 화면으로 이동합니다...");
+      // 가입 성공 시 온보딩(역할 선택) 화면으로 강제 이동
       setTimeout(() => {
-        router.push("/");
+        router.push("/onboarding");
       }, 1000);
     }
     setIsLoading(false);
