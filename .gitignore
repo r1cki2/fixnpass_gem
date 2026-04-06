@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Next.js & Node
+node_modules/
+.next/
+out/
+build/
+
+# 환경변수 (보안)
+.env*

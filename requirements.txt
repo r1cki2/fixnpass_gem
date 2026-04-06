@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+python-multipart
+PyMuPDF
+supabase>=2.4.0
+pydantic
+httpx
