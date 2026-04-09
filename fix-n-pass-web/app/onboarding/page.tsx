@@ -23,7 +23,7 @@ export default function OnboardingPage() {
   }, [router]);
 
   // 역할 선택 시 DB 업데이트 함수
-  const handleRoleSelect = async (role: "client" | "contractor") => {
+  const handleRoleSelect = async (role: "requester" | "contractor") => {
     if (!userId) return;
     setIsLoading(true);
 
@@ -40,7 +40,7 @@ export default function OnboardingPage() {
     }
 
     // 데이터 적재 성공 시, 역할에 맞는 맞춤형 메인 화면으로 이동
-    if (role === "client") {
+    if (role === "requester") {
       router.push("/"); // 의뢰인은 메인 홈으로
     } else {
       router.push("/contractor/market"); // 수리업체는 업체용 마켓으로
@@ -57,7 +57,7 @@ export default function OnboardingPage() {
       <div className="grid md:grid-cols-2 gap-8">
         {/* 의뢰인 버튼 */}
         <button
-          onClick={() => handleRoleSelect("client")}
+          onClick={() => handleRoleSelect("requester")}
           disabled={isLoading}
           className="flex flex-col items-center justify-center p-10 bg-white border-2 border-gray-200 rounded-2xl hover:border-blue-500 hover:bg-blue-50 transition-all group disabled:opacity-50"
         >

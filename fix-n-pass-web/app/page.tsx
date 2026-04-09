@@ -43,17 +43,11 @@ export default function IntroPage() {
 
     const formData = new FormData();
     formData.append('file', file);
-    if (!user?.id) {
-      alert('로그인이 필요합니다.');
-      router.push('/login');
-      setIsUploading(false);
-      return;
-    }
-    const requesterId = user.id;
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+    const query = user?.id ? `?requester_id=${encodeURIComponent(user.id)}` : '';
 
     try {
-      const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-      const res = await fetch(`${baseUrl}/api/upload-pdf?requester_id=${requesterId}`, {
+      const res = await fetch(`${baseUrl}/api/upload-pdf${query}`, {
         method: 'POST',
         body: formData,
       });
@@ -100,8 +94,13 @@ export default function IntroPage() {
   };
 
   const handleFinalRequest = async () => {
-    if (!analysisResult || !analysisResult.repair_request_id || !user?.id) {
+    if (!analysisResult || !analysisResult.repair_request_id) {
       alert("데이터 식별 오류입니다. 새로고침 후 다시 시도해주세요.");
+      return;
+    }
+    if (!user?.id) {
+      alert('견적 요청 접수를 위해 로그인/회원가입이 필요합니다.');
+      router.push('/login');
       return;
     }
     
@@ -240,6 +239,11 @@ export default function IntroPage() {
               >
                 {isRequesting ? <><Loader2 className="w-6 h-6 animate-spin" /> 요청 전송 중...</> : <>{selectedItems.length}개 항목 최종 견적 요청하기 <ArrowRight className="w-6 h-6" /></>}
               </button>
+              {!user?.id && (
+                <p className="text-center text-sm text-slate-500 mt-3">
+                  PDF 분석은 비회원도 가능하며, 최종 견적 요청 시 로그인/회원가입이 필요합니다.
+                </p>
+              )}
             </div>
           </section>
         )}

@@ -49,7 +49,7 @@ export default function AuthNav() {
   // 비로그인 상태일 때 보여줄 UI
   return (
     <Link href="/login" className="text-sm font-semibold text-blue-600 hover:text-blue-800 transition-colors">
-      로그인 / 회원가입
+      로그인
     </Link>
   );
 }

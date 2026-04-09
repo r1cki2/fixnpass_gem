@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -33,33 +34,10 @@ export default function LoginPage() {
     setIsLoading(false);
   };
 
-  // 회원가입 처리
-  const handleSignUp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    setMessage("");
-
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-    });
-
-    if (error) {
-      setMessage("회원가입 실패: " + error.message);
-    } else {
-      setMessage("회원가입 성공! 역할 설정 화면으로 이동합니다...");
-      // 가입 성공 시 온보딩(역할 선택) 화면으로 강제 이동
-      setTimeout(() => {
-        router.push("/onboarding");
-      }, 1000);
-    }
-    setIsLoading(false);
-  };
-
   return (
     <div className="max-w-md mx-auto mt-20 p-6 bg-white rounded-xl shadow-md border border-gray-200">
       <h1 className="text-3xl font-bold text-center text-gray-800 mb-8">
-        로그인 / 회원가입
+        로그인
       </h1>
 
       <form className="flex flex-col gap-6">
@@ -100,13 +78,12 @@ export default function LoginPage() {
             {isLoading ? "처리 중..." : "로그인"}
           </button>
           
-          <button
-            onClick={handleSignUp}
-            disabled={isLoading}
-            className="w-full bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-4 rounded-lg text-xl transition-colors border border-gray-300 disabled:bg-gray-100"
+          <Link
+            href="/signup"
+            className="w-full text-center bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-4 rounded-lg text-xl transition-colors border border-gray-300"
           >
-            회원가입
-          </button>
+            회원가입 화면으로 이동
+          </Link>
         </div>
       </form>
     </div>

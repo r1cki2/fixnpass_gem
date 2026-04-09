@@ -3,7 +3,7 @@ import os
 import tempfile
 import uuid
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 import fitz
 import httpx
@@ -104,7 +104,7 @@ def _build_masked_pdf(ai_data: dict) -> bytes:
 
 
 @app.post("/api/upload-pdf")
-async def upload_pdf(requester_id: str, file: UploadFile = File(...)):
+async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File(...)):
     req_token = str(uuid.uuid4())
     original_path = f"requester/{requester_id}/{req_token}/original.pdf"
     masked_path = f"request/{req_token}/masked.pdf"
@@ -153,7 +153,6 @@ async def upload_pdf(requester_id: str, file: UploadFile = File(...)):
 
         # 4) DB 저장
         insert_data = {
-            "requester_id": requester_id,
             "status": "draft",
             "region_summary": ai_data.get("region_summary", "위치 미확인"),
             "address_detail": ai_data.get("address_detail", ""),
@@ -167,6 +166,9 @@ async def upload_pdf(requester_id: str, file: UploadFile = File(...)):
             },
             "selected_items": _safe_list(ai_data.get("mandatory_repairs", [])),
         }
+        # 게스트 업로드 허용: 로그인 사용자인 경우에만 requester_id 저장
+        if requester_id:
+            insert_data["requester_id"] = requester_id
         db_res = supabase.table("repair_requests").insert(insert_data).execute()
         return {"status": "success", "data": db_res.data[0]}
     except Exception as e:
@@ -179,10 +181,28 @@ async def upload_pdf(requester_id: str, file: UploadFile = File(...)):
 @app.post("/api/update-request")
 async def update_request(req: UpdateRequest):
     try:
+        existing = (
+            supabase.table("repair_requests")
+            .select("repair_request_id, requester_id")
+            .eq("repair_request_id", req.repair_request_id)
+            .execute()
+        )
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="요청 건을 찾을 수 없습니다.")
+        current_requester = existing.data[0].get("requester_id")
+        if current_requester and current_requester != req.requester_id:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
         supabase.table("repair_requests").update(
-            {"selected_items": req.selected_items, "status": req.status}
-        ).eq("repair_request_id", req.repair_request_id).eq("requester_id", req.requester_id).execute()
+            {
+                "requester_id": req.requester_id,
+                "selected_items": req.selected_items,
+                "status": req.status,
+            }
+        ).eq("repair_request_id", req.repair_request_id).execute()
         return {"status": "success"}
+    except HTTPException as e:
+        raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
