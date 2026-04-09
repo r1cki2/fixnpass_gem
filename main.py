@@ -106,7 +106,8 @@ def _build_masked_pdf(ai_data: dict) -> bytes:
 @app.post("/api/upload-pdf")
 async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File(...)):
     req_token = str(uuid.uuid4())
-    original_path = f"requester/{requester_id}/{req_token}/original.pdf"
+    owner_key = requester_id or "guest"
+    original_path = f"requester/{owner_key}/{req_token}/original.pdf"
     masked_path = f"request/{req_token}/masked.pdf"
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         file_bytes = await file.read()
@@ -115,7 +116,11 @@ async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File
 
     try:
         # 1) 원본은 private 버킷에 저장 (public URL 금지)
-        supabase.storage.from_(ORIGINAL_BUCKET).upload(path=original_path, file=file_bytes)
+        supabase.storage.from_(ORIGINAL_BUCKET).upload(
+            path=original_path,
+            file=file_bytes,
+            file_options={"content-type": "application/pdf"},
+        )
 
         # 2) PDF 텍스트 추출(최대 5페이지)
         doc = fitz.open(tmp_path)
@@ -149,7 +154,11 @@ async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File
 
         # 3) 마스킹 PDF 생성/업로드 (LLM 추가 호출 없음)
         masked_bytes = _build_masked_pdf(ai_data)
-        supabase.storage.from_(MASKED_BUCKET).upload(path=masked_path, file=masked_bytes)
+        supabase.storage.from_(MASKED_BUCKET).upload(
+            path=masked_path,
+            file=masked_bytes,
+            file_options={"content-type": "application/pdf"},
+        )
 
         # 4) DB 저장
         insert_data = {
