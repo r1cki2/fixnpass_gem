@@ -24,8 +24,10 @@ app.add_middleware(
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")  # fallback (legacy)
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_SERVER_KEY = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVER_KEY)
 
 ORIGINAL_BUCKET = "inspection-original"
 MASKED_BUCKET = "inspection-masked"
@@ -181,6 +183,20 @@ async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File
         db_res = supabase.table("repair_requests").insert(insert_data).execute()
         return {"status": "success", "data": db_res.data[0]}
     except Exception as e:
+        if "row-level security policy" in str(e):
+            key_hint = (
+                "SUPABASE_SERVICE_ROLE_KEY"
+                if SUPABASE_SERVICE_ROLE_KEY
+                else "SUPABASE_KEY(anon 가능성 높음)"
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Supabase RLS 차단: 서버에서 storage/db 쓰기 권한이 부족합니다. "
+                    f"현재 키 소스={key_hint}. 서버 환경변수에 SUPABASE_SERVICE_ROLE_KEY 설정이 필요합니다. "
+                    f"원본오류: {str(e)}"
+                ),
+            )
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if os.path.exists(tmp_path):
@@ -213,6 +229,20 @@ async def update_request(req: UpdateRequest):
     except HTTPException as e:
         raise e
     except Exception as e:
+        if "row-level security policy" in str(e):
+            key_hint = (
+                "SUPABASE_SERVICE_ROLE_KEY"
+                if SUPABASE_SERVICE_ROLE_KEY
+                else "SUPABASE_KEY(anon 가능성 높음)"
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Supabase RLS 차단: update-request 쓰기 권한이 부족합니다. "
+                    f"현재 키 소스={key_hint}. 서버 환경변수에 SUPABASE_SERVICE_ROLE_KEY 설정이 필요합니다. "
+                    f"원본오류: {str(e)}"
+                ),
+            )
         raise HTTPException(status_code=500, detail=str(e))
 
 
