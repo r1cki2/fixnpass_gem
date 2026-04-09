@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Building2, Clock, CheckSquare, ArrowLeft, Receipt, Star, Phone, CheckCircle2, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
+import { supabase } from '@/lib/supabase';
 
 export default function RequestDetailPage() {
   const params = useParams();
@@ -14,13 +15,20 @@ export default function RequestDetailPage() {
   const [bids, setBids] = useState<any[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
+  const [userId, setUserId] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.id) {
+        setLoading(false);
+        return;
+      }
+      setUserId(user.id);
       const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
       const [reqRes, bidRes] = await Promise.all([
-        fetch(`${baseUrl}/api/my-requests/${requestId}`),
-        fetch(`${baseUrl}/api/my-requests/${requestId}/bids`)
+        fetch(`${baseUrl}/api/my-requests/${requestId}?requester_id=${user.id}`),
+        fetch(`${baseUrl}/api/my-requests/${requestId}/bids?requester_id=${user.id}`)
       ]);
       
       const reqJson = await reqRes.json();
@@ -46,12 +54,14 @@ export default function RequestDetailPage() {
   };
 
   const handleMatch = async () => {
+    if (!userId) return alert('로그인이 필요합니다.');
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
     const res = await fetch(`${baseUrl}/api/match-partners`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         repair_request_id: Number(requestId),
+        requester_id: userId,
         selected_bid_ids: selectedIds
       })
     });

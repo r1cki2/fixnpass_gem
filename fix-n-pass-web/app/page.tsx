@@ -43,7 +43,13 @@ export default function IntroPage() {
 
     const formData = new FormData();
     formData.append('file', file);
-    const requesterId = user?.id || 'cedfed81-1e92-4e30-93a1-4f782d4e4fc1';
+    if (!user?.id) {
+      alert('로그인이 필요합니다.');
+      router.push('/login');
+      setIsUploading(false);
+      return;
+    }
+    const requesterId = user.id;
 
     try {
       const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
@@ -94,7 +100,7 @@ export default function IntroPage() {
   };
 
   const handleFinalRequest = async () => {
-    if (!analysisResult || !analysisResult.pdf_url) {
+    if (!analysisResult || !analysisResult.repair_request_id || !user?.id) {
       alert("데이터 식별 오류입니다. 새로고침 후 다시 시도해주세요.");
       return;
     }
@@ -108,7 +114,8 @@ export default function IntroPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          pdf_url: analysisResult.pdf_url,
+          repair_request_id: analysisResult.repair_request_id,
+          requester_id: user.id,
           selected_items: selectedItems,
           status: 'requested'
         })
@@ -134,7 +141,7 @@ export default function IntroPage() {
     <div className="min-h-screen bg-white text-slate-900 font-sans">
       <main className="max-w-4xl mx-auto pt-20 pb-10 px-6">
         <header className="text-center mb-12">
-          <h1 className="text-4xl font-extrabold text-blue-600 mb-2 tracking-tight">Fix & Pass</h1>
+          <h1 className="text-4xl font-extrabold text-blue-600 mb-2 tracking-tight">fix&pass</h1>
           <p className="text-lg text-slate-500 font-medium">기계식 주차장 안전검사 AI 분석 및 견적 비교</p>
         </header>
 

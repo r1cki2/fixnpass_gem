@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Clock, ChevronRight, Building2, FileText, AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
+import { supabase } from '@/lib/supabase';
 
 export default function MyRequestsPage() {
   const [requests, setRequests] = useState<any[]>([]);
@@ -11,8 +12,13 @@ export default function MyRequestsPage() {
   useEffect(() => {
     const fetchRequests = async () => {
       try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user?.id) {
+          setRequests([]);
+          return;
+        }
         const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-        const res = await fetch(`${baseUrl}/api/my-requests`);
+        const res = await fetch(`${baseUrl}/api/my-requests?requester_id=${user.id}`);
         
         if (!res.ok) throw new Error('서버에서 데이터를 불러오지 못했습니다.');
         

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, CheckCircle2, DollarSign, Send, Loader2, Info, AlertTriangle, Lock } from 'lucide-react';
+import { supabase } from '@/lib/supabase';
 
 export default function ContractorBidPage() {
   const params = useParams();
@@ -16,12 +17,19 @@ export default function ContractorBidPage() {
   const [hasBid, setHasBid] = useState(false);
   const [canEdit, setCanEdit] = useState(true);
   const [isMatched, setIsMatched] = useState(false);
+  const [partnerId, setPartnerId] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchDetail = async () => {
       try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user?.id) {
+          router.push('/login');
+          return;
+        }
+        setPartnerId(user.id);
         const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-        const res = await fetch(`${baseUrl}/api/my-requests/${requestId}`);
+        const res = await fetch(`${baseUrl}/api/contractor/market/${requestId}?partner_id=${user.id}`);
         const result = await res.json();
         
         if (result.data) {
@@ -43,12 +51,16 @@ export default function ContractorBidPage() {
       }
     };
     fetchDetail();
-  }, [requestId]);
+  }, [requestId, router]);
 
   const handleSubmitBid = async () => {
     // 팝업 안내 로직 추가
     if (hasBid && !canEdit) {
       alert('견적액 수정은 1회까지만 가능합니다.');
+      return;
+    }
+    if (!partnerId) {
+      alert('로그인이 필요합니다.');
       return;
     }
     
@@ -62,7 +74,7 @@ export default function ContractorBidPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           repair_request_id: Number(requestId),
-          partner_id: '1e11b504-4069-4daa-8fc0-5f99ea952906',
+          partner_id: partnerId,
           bid_amount: Number(amount)
         })
       });
@@ -79,6 +91,20 @@ export default function ContractorBidPage() {
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const openMaskedPdf = async () => {
+    if (!partnerId) return;
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+    const res = await fetch(
+      `${baseUrl}/api/requests/${requestId}/pdf?viewer=contractor&user_id=${partnerId}`
+    );
+    const json = await res.json();
+    if (!res.ok) {
+      alert(json.detail || '마스킹 PDF를 열 수 없습니다.');
+      return;
+    }
+    window.open(json.url, '_blank');
   };
 
   if (!req) return <div className="min-h-screen bg-slate-50 flex items-center justify-center">로딩 중...</div>;
@@ -117,6 +143,13 @@ export default function ContractorBidPage() {
               </div>
             ))}
           </div>
+
+          <button
+            onClick={openMaskedPdf}
+            className="mb-8 w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3 rounded-xl"
+          >
+            업체용 마스킹 PDF 보기
+          </button>
 
           <div className="border-t border-slate-100 pt-10">
             <div className={`rounded-[2rem] p-8 text-white shadow-xl ${canEdit ? 'bg-blue-600 shadow-blue-100' : 'bg-slate-400 shadow-none'}`}>

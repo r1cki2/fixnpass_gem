@@ -3,11 +3,13 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 export default function ContractorMarketPage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthorized, setIsAuthorized] = useState(false);
+  const [requests, setRequests] = useState<any[]>([]);
 
   useEffect(() => {
     const checkAccess = async () => {
@@ -42,6 +44,10 @@ export default function ContractorMarketPage() {
 
       // 4. 모든 보안 검사 통과 시 화면 렌더링 허용
       setIsAuthorized(true);
+      const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+      const res = await fetch(`${baseUrl}/api/contractor/market?partner_id=${session.user.id}`);
+      const json = await res.json();
+      setRequests(json.data || []);
       setIsLoading(false);
     };
 
@@ -66,18 +72,34 @@ export default function ContractorMarketPage() {
 
   // 완벽하게 권한이 확인된 수리업체에게만 보여줄 실제 화면
   return (
-    <div className="max-w-5xl mx-auto mt-10 p-6 bg-white rounded-xl shadow-sm border border-gray-200">
-      <h1 className="text-3xl font-bold text-gray-800 mb-4">수리 마켓 (업체 전용)</h1>
-      <p className="text-gray-600 mb-8">
-        여기는 수리업체만 들어올 수 있는 보안 공간입니다. 의뢰인들이 올린 수리 요청 목록이 이곳에 표시될 예정입니다.
-      </p>
-      
-      <div className="p-8 border-2 border-dashed border-gray-300 rounded-lg text-center bg-gray-50">
-        <span className="text-4xl block mb-4">🚧</span>
-        <h2 className="text-xl font-bold text-gray-700">수리 요청 데이터 적재 대기 중</h2>
-        <p className="text-gray-500 mt-2">
-          (다음 단계에서 의뢰인이 PDF를 파싱하여 데이터를 올리면 여기에 나타납니다.)
-        </p>
+    <div className="max-w-5xl mx-auto mt-10 p-6">
+      <h1 className="text-3xl font-bold text-gray-800 mb-2">수리 마켓 (업체 전용)</h1>
+      <p className="text-gray-600 mb-8">상세주소는 비공개이며, 지역(구)과 수리 항목만 표시됩니다.</p>
+
+      <div className="grid gap-4">
+        {requests.length === 0 && (
+          <div className="p-8 border rounded-xl text-center bg-white text-gray-500">
+            현재 확인 가능한 견적 요청이 없습니다.
+          </div>
+        )}
+        {requests.map((req) => (
+          <Link
+            key={req.repair_request_id}
+            href={`/contractor/market/${req.repair_request_id}`}
+            className="block bg-white rounded-xl border p-5 hover:border-blue-400 transition-colors"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-bold text-gray-800">{req.building_name || "건물명 미확인"}</h2>
+              <span className={`text-xs px-2 py-1 rounded-full font-semibold ${req.already_bid ? "bg-emerald-100 text-emerald-700" : "bg-gray-100 text-gray-600"}`}>
+                {req.already_bid ? "견적 제출함" : "미제출"}
+              </span>
+            </div>
+            <p className="text-sm text-gray-500 mb-3">{req.region_summary}</p>
+            <div className="text-sm text-gray-700">
+              요청 항목: <span className="font-semibold">{req.selected_items?.length || 0}개</span>
+            </div>
+          </Link>
+        ))}
       </div>
     </div>
   );
