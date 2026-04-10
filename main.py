@@ -143,6 +143,19 @@ class AdminUserActiveUpdate(BaseModel):
     is_active: bool
 
 
+class MyProfileUpdate(BaseModel):
+    user_id: str
+    role: Optional[str] = None
+    name: Optional[str] = None
+    phone_number: Optional[str] = None
+    company_name: Optional[str] = None
+    business_location: Optional[str] = None
+    service_regions: Optional[List[str]] = None
+    years_experience: Optional[int] = None
+    employee_count: Optional[int] = None
+    intro: Optional[str] = None
+
+
 def _safe_list(v):
     return v if isinstance(v, list) else []
 
@@ -184,6 +197,20 @@ def _require_active_role(user_id: str, allowed_roles: List[str], who: str):
         raise HTTPException(status_code=403, detail="비활성화된 계정입니다. 관리자에게 문의해주세요.")
 
 
+def _enqueue_notification(event_type: str, user_id: str, payload: dict):
+    try:
+        supabase.table("notification_queue").insert(
+            {
+                "event_type": event_type,
+                "user_id": user_id,
+                "payload": payload,
+                "status": "pending",
+            }
+        ).execute()
+    except Exception as e:
+        logging.warning("notification_queue insert failed: %s", str(e))
+
+
 def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict) -> bytes:
     """
     원본 PDF 레이아웃/사진은 유지하고, 민감 텍스트만 가린 업체용 PDF를 생성한다.
@@ -221,6 +248,8 @@ def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict) -> bytes:
 @app.post("/api/upload-pdf")
 async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File(...)):
     _rate_limit("upload_pdf", requester_id or "guest")
+    if requester_id:
+        _require_active_role(requester_id, ["requester"], "requester")
     req_token = str(uuid.uuid4())
     owner_key = requester_id or "guest"
     original_path = f"requester/{owner_key}/{req_token}/original.pdf"
@@ -317,6 +346,7 @@ async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File
 async def update_request(req: UpdateRequest):
     try:
         _rate_limit("update_request", req.requester_id)
+        _require_active_role(req.requester_id, ["requester"], "requester")
         existing = (
             supabase.table("repair_requests")
             .select("repair_request_id, requester_id")
@@ -350,6 +380,140 @@ async def update_request(req: UpdateRequest):
                     f"원본오류: {str(e)}"
                 ),
             )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/partner/{partner_id}")
+async def get_partner_profile(partner_id: str):
+    try:
+        profile_res = (
+            supabase.table("profiles")
+            .select("id, role, name, phone_number, company_name")
+            .eq("id", partner_id)
+            .limit(1)
+            .execute()
+        )
+        if not profile_res.data:
+            raise HTTPException(status_code=404, detail="업체 정보를 찾을 수 없습니다.")
+        profile = profile_res.data[0]
+        if profile.get("role") != "contractor":
+            raise HTTPException(status_code=404, detail="업체 정보를 찾을 수 없습니다.")
+
+        rating_res = (
+            supabase.table("partner_ratings")
+            .select("avg_rating, review_count")
+            .eq("partner_id", partner_id)
+            .limit(1)
+            .execute()
+        )
+        rating = rating_res.data[0] if rating_res.data else {"avg_rating": 0, "review_count": 0}
+
+        extra = {
+            "business_location": None,
+            "service_regions": [],
+            "years_experience": None,
+            "employee_count": None,
+            "intro": None,
+        }
+        try:
+            extra_res = (
+                supabase.table("partner_profiles")
+                .select("business_location, service_regions, years_experience, employee_count, intro")
+                .eq("partner_id", partner_id)
+                .limit(1)
+                .execute()
+            )
+            if extra_res.data:
+                extra = extra_res.data[0]
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "data": {
+                "partner_id": partner_id,
+                "name": profile.get("name"),
+                "company_name": profile.get("company_name"),
+                "avg_rating": float(rating.get("avg_rating", 0)),
+                "review_count": int(rating.get("review_count", 0)),
+                **extra,
+            },
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/me/profile")
+async def get_my_profile(user_id: str):
+    try:
+        profile = _get_profile(user_id)
+        if not profile:
+            raise HTTPException(status_code=404, detail="프로필 정보를 찾을 수 없습니다.")
+        response = {"profile": profile, "partner_profile": None}
+        if profile.get("role") == "contractor":
+            try:
+                p = (
+                    supabase.table("partner_profiles")
+                    .select("business_location, service_regions, years_experience, employee_count, intro")
+                    .eq("partner_id", user_id)
+                    .limit(1)
+                    .execute()
+                )
+                if p.data:
+                    response["partner_profile"] = p.data[0]
+            except Exception:
+                pass
+        return {"status": "success", "data": response}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/me/profile")
+async def update_my_profile(body: MyProfileUpdate):
+    try:
+        base_update = {}
+        if body.role in ["requester", "contractor"]:
+            base_update["role"] = body.role
+        if body.name is not None:
+            base_update["name"] = body.name
+        if body.phone_number is not None:
+            base_update["phone_number"] = body.phone_number
+        if body.company_name is not None:
+            base_update["company_name"] = body.company_name
+        if base_update:
+            supabase.table("profiles").update(base_update).eq("id", body.user_id).execute()
+
+        effective_role = body.role
+        if not effective_role:
+            profile = _get_profile(body.user_id)
+            effective_role = profile.get("role") if profile else None
+
+        if effective_role == "contractor":
+            upsert_payload = {
+                "partner_id": body.user_id,
+                "business_location": body.business_location or "",
+                "service_regions": body.service_regions or [],
+                "years_experience": body.years_experience,
+                "employee_count": body.employee_count,
+                "intro": body.intro or "",
+            }
+            try:
+                supabase.table("partner_profiles").upsert(upsert_payload).execute()
+            except Exception as e:
+                if "relation" in str(e) and "partner_profiles" in str(e):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="partner_profiles 테이블이 없습니다. 마이그레이션 SQL을 먼저 적용해주세요.",
+                    )
+                raise e
+        return {"status": "success"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -565,6 +729,7 @@ async def submit_bid(bid: BidSubmission):
             .eq("partner_id", bid.partner_id)
             .execute()
         )
+        is_first_bid = not bool(existing_bid.data)
         if existing_bid.data:
             current_bid = existing_bid.data[0]
             if current_bid.get("edit_count", 0) >= 1:
@@ -604,6 +769,15 @@ async def submit_bid(bid: BidSubmission):
                 .eq("repair_request_id", bid.repair_request_id)
                 .execute()
             )
+        if is_first_bid:
+            _enqueue_notification(
+                "first_bid_submitted",
+                bid.partner_id,
+                {
+                    "repair_request_id": bid.repair_request_id,
+                    "bid_id": res.data[0].get("bid_id"),
+                },
+            )
         return {"status": "success", "data": res.data[0]}
     except HTTPException as e:
         raise e
@@ -633,6 +807,22 @@ async def match_partners(data: MatchPartners):
             .eq("requester_id", data.requester_id)
             .execute()
         )
+        if data.selected_bid_ids:
+            selected_bids = (
+                supabase.table("bids")
+                .select("bid_id, partner_id")
+                .in_("bid_id", data.selected_bid_ids)
+                .execute()
+            )
+            for b in selected_bids.data or []:
+                _enqueue_notification(
+                    "requester_selected_partner",
+                    b.get("partner_id"),
+                    {
+                        "repair_request_id": data.repair_request_id,
+                        "selected_bid_id": b.get("bid_id"),
+                    },
+                )
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

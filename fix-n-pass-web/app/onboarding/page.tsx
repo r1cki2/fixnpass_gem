@@ -12,6 +12,7 @@ export default function OnboardingPage() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [region, setRegion] = useState("");
+  const [serviceRegionsInput, setServiceRegionsInput] = useState("");
   const [buildingRole, setBuildingRole] = useState<"owner" | "manager" | "">("");
 
   // 화면 진입 시 현재 로그인된 유저 ID 확인
@@ -43,6 +44,10 @@ export default function OnboardingPage() {
     }
     if (role === "contractor" && (!companyName.trim() || !region.trim())) {
       alert("업체명과 활동 지역은 필수입니다.");
+      return;
+    }
+    if (role === "contractor" && !serviceRegionsInput.trim()) {
+      alert("관심 지역은 필수입니다. (쉼표로 구분)");
       return;
     }
     setIsLoading(true);
@@ -78,6 +83,32 @@ export default function OnboardingPage() {
       alert("추가 정보 저장 중 오류가 발생했습니다: " + mdError.message);
       setIsLoading(false);
       return;
+    }
+
+    if (role === "contractor") {
+      const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+      const serviceRegions = serviceRegionsInput
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const profileRes = await fetch(`${baseUrl}/api/me/profile`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          role: "contractor",
+          company_name: companyName.trim(),
+          phone_number: phoneNumber.replace(/[^0-9]/g, ""),
+          business_location: region.trim(),
+          service_regions: serviceRegions,
+        }),
+      });
+      if (!profileRes.ok) {
+        const err = await profileRes.json().catch(() => ({}));
+        alert(err.detail || "업체 프로필 저장에 실패했습니다.");
+        setIsLoading(false);
+        return;
+      }
     }
 
     if (role === "requester") {
@@ -177,6 +208,16 @@ export default function OnboardingPage() {
                 onChange={(e) => setRegion(e.target.value)}
                 className="w-full px-4 py-3 border rounded-lg"
                 placeholder="예: 서울 송파구"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">관심 지역(수리 가능 범위)</label>
+              <input
+                type="text"
+                value={serviceRegionsInput}
+                onChange={(e) => setServiceRegionsInput(e.target.value)}
+                className="w-full px-4 py-3 border rounded-lg"
+                placeholder="예: 서울 송파구, 서울 강동구"
               />
             </div>
           </>

@@ -30,6 +30,9 @@ export default function RootLayout({
                 <Link href="/my-requests" className="hover:text-blue-600 transition-colors">
                   내 요청 내역
                 </Link>
+                <Link href="/my-page" className="hover:text-blue-600 transition-colors">
+                  마이페이지
+                </Link>
                 <Link href="/contractor/market" className="hover:text-blue-600 transition-colors">
                   수리 마켓 (업체용)
                 </Link>

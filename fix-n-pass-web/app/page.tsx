@@ -16,6 +16,7 @@ export default function IntroPage() {
   const [user, setUser] = useState<any>(null);
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [isRequesting, setIsRequesting] = useState(false);
+  const [role, setRole] = useState<string | null>(null);
   
   const router = useRouter();
 
@@ -23,6 +24,16 @@ export default function IntroPage() {
     const getUser = async () => {
       const { data: { user: currentUser } } = await supabase.auth.getUser();
       setUser(currentUser);
+      if (currentUser?.id) {
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", currentUser.id)
+          .single();
+        setRole(profile?.role || null);
+      } else {
+        setRole(null);
+      }
     };
     getUser();
   }, []);
@@ -39,6 +50,11 @@ export default function IntroPage() {
 
   const handleUpload = async () => {
     if (!file) return;
+    if (role === "contractor") {
+      alert("수리업체 계정은 수리 의뢰를 등록할 수 없습니다.");
+      router.push("/contractor/market");
+      return;
+    }
     setIsUploading(true);
 
     const formData = new FormData();
