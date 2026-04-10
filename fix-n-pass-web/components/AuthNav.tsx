@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 export default function AuthNav() {
   const [user, setUser] = useState<any>(null);
   const router = useRouter();
+  const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL;
 
   useEffect(() => {
     // 1. 페이지 접속 시 현재 로그인된 세션 정보 가져오기
@@ -33,8 +34,14 @@ export default function AuthNav() {
 
   // 로그인 상태일 때 보여줄 UI
   if (user) {
+    const isAdmin = adminEmail && user.email?.toLowerCase() === adminEmail.toLowerCase();
     return (
       <div className="flex items-center gap-4">
+        {isAdmin && (
+          <Link href="/admin" className="text-sm font-semibold text-indigo-600 hover:text-indigo-800 transition-colors">
+            관리자
+          </Link>
+        )}
         <span className="text-sm font-medium text-gray-700">{user.email} 님</span>
         <button 
           onClick={handleLogout} 

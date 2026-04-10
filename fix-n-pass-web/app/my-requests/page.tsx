@@ -15,6 +15,17 @@ export default function MyRequestsPage() {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user?.id) {
           setRequests([]);
+          setLoading(false);
+          return;
+        }
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", user.id)
+          .single();
+        if (profile?.role === "contractor") {
+          alert("수리업체 계정은 내 요청 내역에 접근할 수 없습니다.");
+          window.location.href = "/contractor/market";
           return;
         }
         const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;

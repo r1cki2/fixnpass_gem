@@ -11,7 +11,7 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [name, setName] = useState("");
-  const [companyName, setCompanyName] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
@@ -24,13 +24,20 @@ export default function SignupPage() {
 
     setIsLoading(true);
     setMessage("");
+    const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
+    if (cleanPhone.length < 10) {
+      setMessage("전화번호 형식이 올바르지 않습니다.");
+      setIsLoading(false);
+      return;
+    }
+
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: {
           name,
-          company_name: companyName,
+          phone_number: cleanPhone,
           verification_status: "pending",
         },
       },
@@ -51,7 +58,7 @@ export default function SignupPage() {
     <div className="max-w-md mx-auto mt-20 p-6 bg-white rounded-xl shadow-md border border-gray-200">
       <h1 className="text-3xl font-bold text-center text-gray-800 mb-2">회원가입</h1>
       <p className="text-center text-sm text-gray-500 mb-8">
-        이름/업체명 입력 후 가입하고, 다음 화면에서 역할을 설정하세요.
+        이름/연락처 입력 후 가입하고, 다음 화면에서 역할과 상세정보를 설정하세요.
       </p>
 
       <form onSubmit={handleSignUp} className="flex flex-col gap-5">
@@ -68,13 +75,14 @@ export default function SignupPage() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">업체명(선택)</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">전화번호</label>
           <input
-            type="text"
-            value={companyName}
-            onChange={(e) => setCompanyName(e.target.value)}
+            type="tel"
+            value={phoneNumber}
+            onChange={(e) => setPhoneNumber(e.target.value)}
             className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="업체 회원인 경우 입력"
+            placeholder="010-1234-5678"
+            required
           />
         </div>
 
@@ -115,7 +123,7 @@ export default function SignupPage() {
         </div>
 
         <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-700">
-          본인인증/사업자 인증은 다음 단계에서 추가 예정입니다.
+          베타 버전에서는 형식 검증 후 즉시 사용 가능하며, 본인/허가받은 이해관계인 외 업무 처리에 따른 책임은 당사에 귀속되지 않습니다.
         </div>
 
         {message && <div className="text-center font-semibold text-blue-600">{message}</div>}

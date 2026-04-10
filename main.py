@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import tempfile
 import uuid
@@ -7,7 +8,7 @@ from typing import List, Optional
 
 import fitz
 import httpx
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import Client, create_client
@@ -25,9 +26,14 @@ app.add_middleware(
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")  # fallback (legacy)
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_SERVICE_ROLE_KEY = (
+    os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    or os.environ.get("SUPABASE_SECRET_KEY")
+    or os.environ.get("SERVICE_ROLE_KEY")
+)
 SUPABASE_SERVER_KEY = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVER_KEY)
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
 
 ORIGINAL_BUCKET = "inspection-original"
 MASKED_BUCKET = "inspection-masked"
@@ -36,6 +42,69 @@ GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 )
+
+
+def _key_kind(key: Optional[str]) -> str:
+    if not key:
+        return "missing"
+    if "service_role" in key:
+        return "service_role"
+    if "anon" in key:
+        return "anon"
+    return "unknown"
+
+
+RATE_LIMITS = {
+    "upload_pdf": {"limit": 10, "window_sec": 60},
+    "update_request": {"limit": 20, "window_sec": 60},
+    "submit_bid": {"limit": 20, "window_sec": 60},
+    "match_partners": {"limit": 10, "window_sec": 60},
+}
+_rate_counters: dict[str, List[datetime]] = {}
+
+
+def _rate_limit(endpoint: str, actor: str):
+    cfg = RATE_LIMITS.get(endpoint)
+    if not cfg:
+        return
+    now = datetime.utcnow()
+    key = f"{endpoint}:{actor}"
+    window_start = now.timestamp() - cfg["window_sec"]
+    current = _rate_counters.get(key, [])
+    filtered = [t for t in current if t.timestamp() >= window_start]
+    if len(filtered) >= cfg["limit"]:
+        raise HTTPException(status_code=429, detail="요청이 너무 많습니다. 잠시 후 다시 시도해주세요.")
+    filtered.append(now)
+    _rate_counters[key] = filtered
+
+
+def _log_admin_action(action: str, admin_email: str, payload: dict):
+    logging.info(
+        "[admin-action] action=%s admin=%s payload=%s",
+        action,
+        admin_email,
+        json.dumps(payload, ensure_ascii=False),
+    )
+
+
+def _extract_bearer(authorization: Optional[str]) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="인증 토큰이 필요합니다.")
+    return authorization.replace("Bearer ", "", 1).strip()
+
+
+def _require_admin(authorization: Optional[str]) -> dict:
+    if not ADMIN_EMAIL:
+        raise HTTPException(status_code=500, detail="서버에 ADMIN_EMAIL 설정이 필요합니다.")
+    token = _extract_bearer(authorization)
+    user_res = supabase.auth.get_user(token)
+    user = getattr(user_res, "user", None)
+    if not user or not user.email:
+        raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
+    email = user.email.lower()
+    if email != ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="관리자 권한이 없습니다.")
+    return {"id": user.id, "email": email}
 
 
 class UpdateRequest(BaseModel):
@@ -57,8 +126,61 @@ class MatchPartners(BaseModel):
     selected_bid_ids: List[int]
 
 
+class AdminUserRoleUpdate(BaseModel):
+    role: str
+
+
+class AdminRequestStatusUpdate(BaseModel):
+    status: str
+
+
+class AdminRequestMatchUpdate(BaseModel):
+    selected_bid_ids: List[int]
+
+
+class AdminUserActiveUpdate(BaseModel):
+    is_active: bool
+
+
 def _safe_list(v):
     return v if isinstance(v, list) else []
+
+
+def _get_profile(user_id: str) -> Optional[dict]:
+    try:
+        profile_res = (
+            supabase.table("profiles")
+            .select("role, is_active, name, phone_number, company_name")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        # Backward compatibility when is_active column is not created yet.
+        profile_res = (
+            supabase.table("profiles")
+            .select("role, name, phone_number, company_name")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+    if not profile_res.data:
+        return None
+    profile = profile_res.data[0]
+    if "is_active" not in profile:
+        profile["is_active"] = True
+    return profile
+
+
+def _require_active_role(user_id: str, allowed_roles: List[str], who: str):
+    profile = _get_profile(user_id)
+    if not profile:
+        raise HTTPException(status_code=403, detail=f"{who} 프로필이 없습니다.")
+    if profile.get("role") not in allowed_roles:
+        role_kr = "수리업체" if "contractor" in allowed_roles else "의뢰인"
+        raise HTTPException(status_code=403, detail=f"{role_kr}만 접근할 수 있습니다.")
+    if not profile.get("is_active", True):
+        raise HTTPException(status_code=403, detail="비활성화된 계정입니다. 관리자에게 문의해주세요.")
 
 
 def _build_masked_pdf(ai_data: dict) -> bytes:
@@ -107,6 +229,7 @@ def _build_masked_pdf(ai_data: dict) -> bytes:
 
 @app.post("/api/upload-pdf")
 async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File(...)):
+    _rate_limit("upload_pdf", requester_id or "guest")
     req_token = str(uuid.uuid4())
     owner_key = requester_id or "guest"
     original_path = f"requester/{owner_key}/{req_token}/original.pdf"
@@ -184,16 +307,12 @@ async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File
         return {"status": "success", "data": db_res.data[0]}
     except Exception as e:
         if "row-level security policy" in str(e):
-            key_hint = (
-                "SUPABASE_SERVICE_ROLE_KEY"
-                if SUPABASE_SERVICE_ROLE_KEY
-                else "SUPABASE_KEY(anon 가능성 높음)"
-            )
+            key_hint = _key_kind(SUPABASE_SERVER_KEY)
             raise HTTPException(
                 status_code=500,
                 detail=(
                     "Supabase RLS 차단: 서버에서 storage/db 쓰기 권한이 부족합니다. "
-                    f"현재 키 소스={key_hint}. 서버 환경변수에 SUPABASE_SERVICE_ROLE_KEY 설정이 필요합니다. "
+                    f"현재 서버키 유형={key_hint}. 서버 환경변수에 SUPABASE_SERVICE_ROLE_KEY(또는 SUPABASE_SECRET_KEY) 설정이 필요합니다. "
                     f"원본오류: {str(e)}"
                 ),
             )
@@ -206,6 +325,7 @@ async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File
 @app.post("/api/update-request")
 async def update_request(req: UpdateRequest):
     try:
+        _rate_limit("update_request", req.requester_id)
         existing = (
             supabase.table("repair_requests")
             .select("repair_request_id, requester_id")
@@ -230,16 +350,12 @@ async def update_request(req: UpdateRequest):
         raise e
     except Exception as e:
         if "row-level security policy" in str(e):
-            key_hint = (
-                "SUPABASE_SERVICE_ROLE_KEY"
-                if SUPABASE_SERVICE_ROLE_KEY
-                else "SUPABASE_KEY(anon 가능성 높음)"
-            )
+            key_hint = _key_kind(SUPABASE_SERVER_KEY)
             raise HTTPException(
                 status_code=500,
                 detail=(
                     "Supabase RLS 차단: update-request 쓰기 권한이 부족합니다. "
-                    f"현재 키 소스={key_hint}. 서버 환경변수에 SUPABASE_SERVICE_ROLE_KEY 설정이 필요합니다. "
+                    f"현재 서버키 유형={key_hint}. 서버 환경변수에 SUPABASE_SERVICE_ROLE_KEY(또는 SUPABASE_SECRET_KEY) 설정이 필요합니다. "
                     f"원본오류: {str(e)}"
                 ),
             )
@@ -249,6 +365,7 @@ async def update_request(req: UpdateRequest):
 @app.get("/api/my-requests")
 async def get_my_requests(requester_id: str):
     try:
+        _require_active_role(requester_id, ["requester"], "requester")
         res = (
             supabase.table("repair_requests")
             .select("*")
@@ -264,6 +381,7 @@ async def get_my_requests(requester_id: str):
 @app.get("/api/my-requests/{request_id}")
 async def get_request_detail(request_id: int, requester_id: str):
     try:
+        _require_active_role(requester_id, ["requester"], "requester")
         res = (
             supabase.table("repair_requests")
             .select("*")
@@ -282,6 +400,7 @@ async def get_request_detail(request_id: int, requester_id: str):
 async def get_bids_for_request(request_id: int, requester_id: str):
     """의뢰인용 견적 조회 (업체 선택 전 연락처 마스킹)."""
     try:
+        _require_active_role(requester_id, ["requester"], "requester")
         req_res = (
             supabase.table("repair_requests")
             .select("selected_bid_ids, requester_id")
@@ -352,19 +471,7 @@ async def get_request_pdf_url(request_id: int, viewer: str, user_id: str):
             return {"status": "success", "url": signed.get("signedURL")}
 
         if viewer == "contractor":
-            # 선택된 업체만 연락 후 상세자료 접근 가능하게 제한
-            selected_ids = req.get("selected_bid_ids", []) or []
-            partner_bid = (
-                supabase.table("bids")
-                .select("bid_id")
-                .eq("repair_request_id", request_id)
-                .eq("partner_id", user_id)
-                .execute()
-            )
-            if not partner_bid.data:
-                raise HTTPException(status_code=403, detail="권한이 없습니다.")
-            if partner_bid.data[0]["bid_id"] not in selected_ids:
-                raise HTTPException(status_code=403, detail="선택된 업체만 접근할 수 있습니다.")
+            _require_active_role(user_id, ["contractor"], "contractor")
 
             signed = supabase.storage.from_(MASKED_BUCKET).create_signed_url(
                 req["masked_pdf_path"], 300
@@ -382,6 +489,7 @@ async def get_request_pdf_url(request_id: int, viewer: str, user_id: str):
 async def get_market_list(partner_id: str):
     """수리업체용: 지역(시/군/구)+수리항목 중심 마켓 목록(상세주소 비노출)."""
     try:
+        _require_active_role(partner_id, ["contractor"], "contractor")
         req_res = (
             supabase.table("repair_requests")
             .select(
@@ -412,6 +520,7 @@ async def get_market_list(partner_id: str):
 async def get_market_detail(request_id: int, partner_id: str):
     """수리업체용 상세: 상세주소/원본PDF 비공개."""
     try:
+        _require_active_role(partner_id, ["contractor"], "contractor")
         req_res = (
             supabase.table("repair_requests")
             .select(
@@ -443,6 +552,8 @@ async def get_market_detail(request_id: int, partner_id: str):
 @app.post("/api/contractor/bid")
 async def submit_bid(bid: BidSubmission):
     try:
+        _rate_limit("submit_bid", bid.partner_id)
+        _require_active_role(bid.partner_id, ["contractor"], "contractor")
         req_res = (
             supabase.table("repair_requests")
             .select("status")
@@ -512,6 +623,8 @@ async def submit_bid(bid: BidSubmission):
 @app.post("/api/match-partners")
 async def match_partners(data: MatchPartners):
     try:
+        _rate_limit("match_partners", data.requester_id)
+        _require_active_role(data.requester_id, ["requester"], "requester")
         if len(data.selected_bid_ids) > 2:
             raise HTTPException(status_code=400, detail="최대 2개 업체만 가능")
         (
@@ -534,6 +647,191 @@ async def match_partners(data: MatchPartners):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/admin/overview")
+async def admin_overview(authorization: Optional[str] = Header(default=None)):
+    admin = _require_admin(authorization)
+    req_count = supabase.table("repair_requests").select("*", count="exact").limit(1).execute().count or 0
+    bid_count = supabase.table("bids").select("*", count="exact").limit(1).execute().count or 0
+    profile_count = supabase.table("profiles").select("*", count="exact").limit(1).execute().count or 0
+    status_rows = (
+        supabase.table("repair_requests")
+        .select("repair_request_id, status, created_at, building_name, region_summary, requester_id")
+        .order("created_at", desc=True)
+        .limit(20)
+        .execute()
+    )
+    return {
+        "status": "success",
+        "data": {
+            "admin_email": admin["email"],
+            "counts": {
+                "requests": req_count,
+                "bids": bid_count,
+                "profiles": profile_count,
+            },
+            "recent_requests": status_rows.data or [],
+        },
+    }
+
+
+@app.get("/api/admin/users")
+async def admin_users(authorization: Optional[str] = Header(default=None)):
+    _require_admin(authorization)
+    try:
+        users = (
+            supabase.table("profiles")
+            .select("id, role, is_active, name, phone_number, company_name, created_at")
+            .order("created_at", desc=True)
+            .limit(200)
+            .execute()
+        )
+    except Exception:
+        users = (
+            supabase.table("profiles")
+            .select("id, role, name, phone_number, company_name, created_at")
+            .order("created_at", desc=True)
+            .limit(200)
+            .execute()
+        )
+        data = users.data or []
+        for row in data:
+            row["is_active"] = True
+        return {"status": "success", "data": data}
+    return {"status": "success", "data": users.data or []}
+
+
+@app.post("/api/admin/users/{user_id}/role")
+async def admin_update_user_role(
+    user_id: str,
+    body: AdminUserRoleUpdate,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    if body.role not in ["requester", "contractor"]:
+        raise HTTPException(status_code=400, detail="role 값이 잘못되었습니다.")
+    supabase.table("profiles").update({"role": body.role}).eq("id", user_id).execute()
+    _log_admin_action("update_user_role", admin["email"], {"user_id": user_id, "role": body.role})
+    return {"status": "success"}
+
+
+@app.post("/api/admin/users/{user_id}/active")
+async def admin_update_user_active(
+    user_id: str,
+    body: AdminUserActiveUpdate,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    try:
+        supabase.table("profiles").update({"is_active": body.is_active}).eq("id", user_id).execute()
+    except Exception as e:
+        if "column" in str(e) and "is_active" in str(e):
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "profiles.is_active 컬럼이 없습니다. 아래 SQL을 실행해주세요: "
+                    "alter table public.profiles add column if not exists is_active boolean not null default true;"
+                ),
+            )
+        raise e
+    _log_admin_action("update_user_active", admin["email"], {"user_id": user_id, "is_active": body.is_active})
+    return {"status": "success"}
+
+
+@app.get("/api/admin/stats/trends")
+async def admin_stats_trends(authorization: Optional[str] = Header(default=None)):
+    _require_admin(authorization)
+    rows = (
+        supabase.table("repair_requests")
+        .select("created_at, status")
+        .order("created_at", desc=False)
+        .limit(5000)
+        .execute()
+    )
+    all_rows = rows.data or []
+    now = datetime.utcnow()
+
+    def _date_key(dt: datetime, unit: str) -> str:
+        if unit == "day":
+            return dt.strftime("%Y-%m-%d")
+        if unit == "week":
+            y, w, _ = dt.isocalendar()
+            return f"{y}-W{w:02d}"
+        return dt.strftime("%Y-%m")
+
+    def _bucketize(days_back: int, unit: str):
+        filtered = []
+        for r in all_rows:
+            try:
+                dt = datetime.fromisoformat(str(r["created_at"]).replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                continue
+            if (now - dt).days <= days_back:
+                filtered.append((dt, r.get("status", "")))
+        m = {}
+        for dt, status in filtered:
+            k = _date_key(dt, unit)
+            if k not in m:
+                m[k] = {"label": k, "total": 0, "matched": 0, "completed": 0}
+            m[k]["total"] += 1
+            if status == "matched":
+                m[k]["matched"] += 1
+            if status == "completed":
+                m[k]["completed"] += 1
+        return [m[k] for k in sorted(m.keys())]
+
+    return {
+        "status": "success",
+        "data": {
+            "daily": _bucketize(30, "day"),
+            "weekly": _bucketize(120, "week"),
+            "monthly": _bucketize(365, "month"),
+        },
+    }
+
+
+@app.post("/api/admin/requests/{request_id}/status")
+async def admin_update_request_status(
+    request_id: int,
+    body: AdminRequestStatusUpdate,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    allowed = ["draft", "requested", "bidding", "matched", "repairing", "completed", "cancelled"]
+    if body.status not in allowed:
+        raise HTTPException(status_code=400, detail="status 값이 잘못되었습니다.")
+    supabase.table("repair_requests").update({"status": body.status}).eq("repair_request_id", request_id).execute()
+    _log_admin_action("update_request_status", admin["email"], {"request_id": request_id, "status": body.status})
+    return {"status": "success"}
+
+
+@app.post("/api/admin/requests/{request_id}/match")
+async def admin_update_request_match(
+    request_id: int,
+    body: AdminRequestMatchUpdate,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    if len(body.selected_bid_ids) > 2:
+        raise HTTPException(status_code=400, detail="최대 2개 업체만 선택 가능합니다.")
+    supabase.table("repair_requests").update(
+        {
+            "selected_bid_ids": body.selected_bid_ids,
+            "status": "matched" if body.selected_bid_ids else "bidding",
+            "contact_unlocked_at": datetime.utcnow().isoformat() if body.selected_bid_ids else None,
+        }
+    ).eq("repair_request_id", request_id).execute()
+    _log_admin_action(
+        "update_request_match",
+        admin["email"],
+        {"request_id": request_id, "selected_bid_ids": body.selected_bid_ids},
+    )
+    return {"status": "success"}
+
+
 @app.api_route("/", methods=["GET", "HEAD"])
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "supabase_key_kind": _key_kind(SUPABASE_SERVER_KEY),
+        "admin_email_configured": bool(ADMIN_EMAIL),
+    }
