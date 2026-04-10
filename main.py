@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import tempfile
 import uuid
 from datetime import datetime
@@ -183,44 +184,34 @@ def _require_active_role(user_id: str, allowed_roles: List[str], who: str):
         raise HTTPException(status_code=403, detail="비활성화된 계정입니다. 관리자에게 문의해주세요.")
 
 
-def _build_masked_pdf(ai_data: dict) -> bytes:
+def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict) -> bytes:
     """
-    업체 노출용 PDF(민감정보 미포함).
-    원본을 전달하지 않고, AI 요약 정보만 재구성한다.
+    원본 PDF 레이아웃/사진은 유지하고, 민감 텍스트만 가린 업체용 PDF를 생성한다.
     """
-    building_name = ai_data.get("building_name", "건물명 미확인")
-    region_summary = ai_data.get("region_summary", "위치 미확인")
-    parking_type = ai_data.get("parking_type", "기종 확인 불가")
-    mandatory = _safe_list(ai_data.get("mandatory_repairs", []))
-    optional = _safe_list(ai_data.get("optional_repairs", []))
+    doc = fitz.open(stream=original_pdf_bytes, filetype="pdf")
+    full_text = ""
+    for p in doc:
+        full_text += p.get_text() + "\n"
 
-    doc = fitz.open()
-    page = doc.new_page(width=595, height=842)  # A4
-    y = 60
+    sensitive_terms = [
+        str(ai_data.get("building_name", "")).strip(),
+        str(ai_data.get("region_summary", "")).strip(),
+        str(ai_data.get("address_detail", "")).strip(),
+    ]
+    # 텍스트에서 직접 추출 가능한 개인정보 패턴도 함께 마스킹
+    sensitive_terms += re.findall(r"\b01[0-9][-\s]?\d{3,4}[-\s]?\d{4}\b", full_text)
+    sensitive_terms += re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", full_text)
+    sensitive_terms = [t for t in sensitive_terms if t and len(t) >= 2]
+    sensitive_terms = list(dict.fromkeys(sensitive_terms))
 
-    def write_line(text: str, size: int = 12, indent: int = 50):
-        nonlocal y
-        page.insert_text((indent, y), text, fontsize=size)
-        y += 20 if size <= 12 else 26
-
-    write_line("fix&pass - Contractor View", size=16)
-    write_line(f"Building: {building_name}")
-    write_line(f"Region (sigungu): {region_summary}")
-    write_line(f"Parking Type: {parking_type}")
-    y += 10
-    write_line("[Mandatory Repairs]", size=14)
-    if mandatory:
-        for idx, item in enumerate(mandatory, start=1):
-            write_line(f"{idx}. {item}", indent=70)
-    else:
-        write_line("- none", indent=70)
-    y += 10
-    write_line("[Optional Repairs]", size=14)
-    if optional:
-        for idx, item in enumerate(optional, start=1):
-            write_line(f"{idx}. {item}", indent=70)
-    else:
-        write_line("- none", indent=70)
+    for page in doc:
+        redaction_count = 0
+        for term in sensitive_terms:
+            for rect in page.search_for(term):
+                page.add_redact_annot(rect, fill=(1, 1, 1))
+                redaction_count += 1
+        if redaction_count > 0:
+            page.apply_redactions()
 
     pdf_bytes = doc.tobytes()
     doc.close()
@@ -278,7 +269,7 @@ async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File
             ai_data = json.loads(ai_raw)
 
         # 3) 마스킹 PDF 생성/업로드 (LLM 추가 호출 없음)
-        masked_bytes = _build_masked_pdf(ai_data)
+        masked_bytes = _build_masked_pdf(file_bytes, ai_data)
         supabase.storage.from_(MASKED_BUCKET).upload(
             path=masked_path,
             file=masked_bytes,

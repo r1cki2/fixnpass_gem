@@ -140,7 +140,7 @@ export default function IntroPage() {
     <div className="min-h-screen bg-white text-slate-900 font-sans">
       <main className="max-w-4xl mx-auto pt-20 pb-10 px-6">
         <header className="text-center mb-12">
-          <h1 className="text-4xl font-extrabold text-blue-600 mb-2 tracking-tight">fix&pass</h1>
+          <h1 className="text-4xl font-extrabold text-blue-600 mb-2 tracking-tight">Fix&Pass</h1>
           <p className="text-lg text-slate-500 font-medium">기계식 주차장 안전검사 AI 분석 및 견적 비교</p>
         </header>
 

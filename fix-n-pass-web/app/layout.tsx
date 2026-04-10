@@ -7,7 +7,7 @@ import AuthNav from "@/components/AuthNav"; // 방금 만든 인증 네비게이
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "fix&pass (픽스앤패스)",
+  title: "Fix&Pass (픽스앤패스)",
   description: "기계식 주차장 안전검사 및 수리 매칭 플랫폼",
 };
 
@@ -24,7 +24,7 @@ export default function RootLayout({
             {/* 좌측 로고 및 메인 메뉴 */}
             <div className="flex items-center gap-8">
               <Link href="/" className="font-bold text-2xl text-blue-600 tracking-tight">
-                fix&pass
+                Fix&Pass
               </Link>
               <nav className="hidden md:flex gap-6 text-sm font-semibold text-gray-600">
                 <Link href="/my-requests" className="hover:text-blue-600 transition-colors">
