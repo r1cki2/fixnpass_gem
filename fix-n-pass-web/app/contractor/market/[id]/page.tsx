@@ -36,6 +36,7 @@ export default function ContractorBidPage() {
           setReq(result.data);
           const matched = ['matched', 'repairing', 'completed'].includes(result.data.status);
           setIsMatched(matched);
+          if (matched) setCanEdit(false);
 
           if (result.data.my_bid) {
             setHasBid(true);
@@ -119,8 +120,9 @@ export default function ContractorBidPage() {
         <div className="bg-white border border-slate-200 rounded-[2.5rem] p-10 shadow-sm mb-8">
           <div className="flex justify-between items-start mb-10">
             <div>
-              <h1 className="text-3xl font-black text-slate-900 mb-2">{req.building_name}</h1>
+              <h1 className="text-3xl font-black text-slate-900 mb-2">{req.site_alias || "비공개 현장"}</h1>
               <p className="text-slate-500 font-medium">{req.region_summary} · {req.parking_type}</p>
+              <p className="text-xs text-slate-400 mt-1">요청 상태: {req.request_stage_kr || req.status}</p>
             </div>
             {isMatched ? (
               <span className="bg-indigo-100 text-indigo-700 px-4 py-2 rounded-2xl text-sm font-black flex items-center gap-2">
@@ -150,6 +152,9 @@ export default function ContractorBidPage() {
           >
             업체용 마스킹 PDF 보기
           </button>
+          <p className="text-xs text-slate-500 mb-6">
+            제출하신 견적이 선택될 경우 연락처, 주소 등 상세 정보가 공개됩니다.
+          </p>
 
           <div className="border-t border-slate-100 pt-10">
             <div className={`rounded-[2rem] p-8 text-white shadow-xl ${canEdit ? 'bg-blue-600 shadow-blue-100' : 'bg-slate-400 shadow-none'}`}>

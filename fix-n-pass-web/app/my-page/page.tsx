@@ -10,6 +10,7 @@ export default function MyPage() {
   const [phone, setPhone] = useState("");
   const [company, setCompany] = useState("");
   const [location, setLocation] = useState("");
+  const [requesterAddress, setRequesterAddress] = useState("");
   const [regionsInput, setRegionsInput] = useState("");
   const [years, setYears] = useState("");
   const [employees, setEmployees] = useState("");
@@ -35,6 +36,7 @@ export default function MyPage() {
         setPhone(p.phone_number || "");
         setCompany(p.company_name || "");
         setLocation(pp.business_location || "");
+        setRequesterAddress(user.user_metadata?.requester_address || "");
         setRegionsInput(Array.isArray(pp.service_regions) ? pp.service_regions.join(", ") : "");
         setYears(pp.years_experience ? String(pp.years_experience) : "");
         setEmployees(pp.employee_count ? String(pp.employee_count) : "");
@@ -69,6 +71,11 @@ export default function MyPage() {
     });
     const json = await res.json();
     if (!res.ok) return alert(json.detail || "저장 실패");
+    if (role === "requester") {
+      await supabase.auth.updateUser({
+        data: { requester_address: requesterAddress },
+      });
+    }
     alert("저장되었습니다.");
   };
 
@@ -81,6 +88,29 @@ export default function MyPage() {
       <div className="bg-white border rounded-2xl p-6 space-y-4">
         <Field label="이름" value={name} setValue={setName} />
         <Field label="전화번호" value={phone} setValue={setPhone} />
+        {role === "requester" && (
+          <div>
+            <label className="block text-sm font-semibold text-slate-700 mb-2">건물 소재지</label>
+            <div className="flex gap-2">
+              <input
+                value={requesterAddress}
+                onChange={(e) => setRequesterAddress(e.target.value)}
+                className="w-full border rounded-lg px-3 py-2"
+                placeholder="주소검색으로 입력"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const manual = window.prompt("건물 소재지를 입력하세요", requesterAddress || "");
+                  if (manual !== null) setRequesterAddress(manual.trim());
+                }}
+                className="px-3 py-2 border rounded-lg text-sm"
+              >
+                주소검색
+              </button>
+            </div>
+          </div>
+        )}
         {role === "contractor" && (
           <>
             <Field label="업체명" value={company} setValue={setCompany} />

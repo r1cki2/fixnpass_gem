@@ -13,6 +13,8 @@ export default function OnboardingPage() {
   const [companyName, setCompanyName] = useState("");
   const [region, setRegion] = useState("");
   const [serviceRegionsInput, setServiceRegionsInput] = useState("");
+  const [recommendedRegions, setRecommendedRegions] = useState<string[]>([]);
+  const [requesterAddress, setRequesterAddress] = useState("");
   const [buildingRole, setBuildingRole] = useState<"owner" | "manager" | "">("");
 
   // 화면 진입 시 현재 로그인된 유저 ID 확인
@@ -27,6 +29,7 @@ export default function OnboardingPage() {
         setPhoneNumber(md.phone_number || "");
         setCompanyName(md.company_name || "");
         setRegion(md.region || "");
+        setRequesterAddress(md.requester_address || "");
       }
     };
     fetchUser();
@@ -40,6 +43,10 @@ export default function OnboardingPage() {
     }
     if (role === "requester" && !buildingRole) {
       alert("건물주/관리인 구분을 선택해주세요.");
+      return;
+    }
+    if (role === "requester" && !requesterAddress.trim()) {
+      alert("건물 소재지 주소를 입력해주세요.");
       return;
     }
     if (role === "contractor" && (!companyName.trim() || !region.trim())) {
@@ -74,6 +81,7 @@ export default function OnboardingPage() {
     const { error: mdError } = await supabase.auth.updateUser({
       data: {
         building_role: role === "requester" ? buildingRole : null,
+        requester_address: role === "requester" ? requesterAddress : null,
         region: role === "contractor" ? region.trim() : null,
         company_name: role === "contractor" ? companyName.trim() : null,
         verification_status: "soft-verified-beta",
@@ -174,18 +182,42 @@ export default function OnboardingPage() {
         </div>
 
         {role === "requester" && (
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">건물주/관리인 구분</label>
-            <select
-              value={buildingRole}
-              onChange={(e) => setBuildingRole(e.target.value as "owner" | "manager" | "")}
-              className="w-full px-4 py-3 border rounded-lg bg-white"
-            >
-              <option value="">선택해주세요</option>
-              <option value="owner">건물주</option>
-              <option value="manager">관리인</option>
-            </select>
-          </div>
+          <>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">건물주/관리인 구분</label>
+              <select
+                value={buildingRole}
+                onChange={(e) => setBuildingRole(e.target.value as "owner" | "manager" | "")}
+                className="w-full px-4 py-3 border rounded-lg bg-white"
+              >
+                <option value="">선택해주세요</option>
+                <option value="owner">건물주</option>
+                <option value="manager">관리인</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">건물 소재지</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={requesterAddress}
+                  onChange={(e) => setRequesterAddress(e.target.value)}
+                  className="w-full px-4 py-3 border rounded-lg"
+                  placeholder="도로명/지번주소 검색 후 선택"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const manual = window.prompt("주소(도로명/지번)를 입력하세요", requesterAddress || "");
+                    if (manual !== null) setRequesterAddress(manual.trim());
+                  }}
+                  className="px-3 py-2 border rounded-lg text-sm"
+                >
+                  주소검색
+                </button>
+              </div>
+            </div>
+          </>
         )}
 
         {role === "contractor" && (
@@ -201,14 +233,40 @@ export default function OnboardingPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">활동 지역</label>
-              <input
-                type="text"
-                value={region}
-                onChange={(e) => setRegion(e.target.value)}
-                className="w-full px-4 py-3 border rounded-lg"
-                placeholder="예: 서울 송파구"
-              />
+              <label className="block text-sm font-semibold text-gray-700 mb-2">소재지</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={region}
+                  onChange={(e) => setRegion(e.target.value)}
+                  className="w-full px-4 py-3 border rounded-lg"
+                  placeholder="도로명/지번주소 검색 후 선택"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const manual = window.prompt("업체 소재지를 입력하세요", region || "");
+                    if (manual !== null) {
+                      const v = manual.trim();
+                      setRegion(v);
+                      if (v) {
+                        const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+                        const rec = await fetch(`${baseUrl}/api/regions/recommend?base_region=${encodeURIComponent(v)}`);
+                        const json = await rec.json().catch(() => ({ data: [] }));
+                        if (Array.isArray(json.data)) {
+                          setRecommendedRegions(json.data);
+                          if (!serviceRegionsInput.trim()) {
+                            setServiceRegionsInput(json.data.join(", "));
+                          }
+                        }
+                      }
+                    }
+                  }}
+                  className="px-3 py-2 border rounded-lg text-sm"
+                >
+                  주소검색
+                </button>
+              </div>
             </div>
             <div>
               <label className="block text-sm font-semibold text-gray-700 mb-2">관심 지역(수리 가능 범위)</label>
@@ -219,6 +277,24 @@ export default function OnboardingPage() {
                 className="w-full px-4 py-3 border rounded-lg"
                 placeholder="예: 서울 송파구, 서울 강동구"
               />
+              {recommendedRegions.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {recommendedRegions.map((r) => (
+                    <button
+                      type="button"
+                      key={r}
+                      onClick={() => {
+                        const current = serviceRegionsInput.split(",").map((s) => s.trim()).filter(Boolean);
+                        if (current.includes(r)) return;
+                        setServiceRegionsInput([...current, r].join(", "));
+                      }}
+                      className="px-2 py-1 text-xs rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200"
+                    >
+                      + {r}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </>
         )}

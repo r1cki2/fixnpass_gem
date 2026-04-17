@@ -1,10 +1,12 @@
 import json
 import logging
+import smtplib
 import os
 import re
 import tempfile
 import uuid
 from datetime import datetime
+from email.mime.text import MIMEText
 from typing import List, Optional
 
 import fitz
@@ -35,6 +37,12 @@ SUPABASE_SERVICE_ROLE_KEY = (
 SUPABASE_SERVER_KEY = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVER_KEY)
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+MAIL_SMTP_HOST = os.environ.get("MAIL_SMTP_HOST", "")
+MAIL_SMTP_PORT = int(os.environ.get("MAIL_SMTP_PORT", "587"))
+MAIL_SMTP_USER = os.environ.get("MAIL_SMTP_USER", "")
+MAIL_SMTP_PASS = os.environ.get("MAIL_SMTP_PASS", "")
+MAIL_FROM = os.environ.get("MAIL_FROM", MAIL_SMTP_USER or "no-reply@fixnpass.local")
+MAIL_CRON_SECRET = os.environ.get("MAIL_CRON_SECRET", "")
 
 ORIGINAL_BUCKET = "inspection-original"
 MASKED_BUCKET = "inspection-masked"
@@ -209,6 +217,37 @@ def _enqueue_notification(event_type: str, user_id: str, payload: dict):
         ).execute()
     except Exception as e:
         logging.warning("notification_queue insert failed: %s", str(e))
+
+
+def _site_alias(request_id: int) -> str:
+    token = hex((request_id * 2654435761) & 0xFFFFF)[2:].upper()
+    return f"현장-{token.zfill(5)}"
+
+
+def _request_stage_kr(status: str) -> str:
+    mapping = {
+        "draft": "작성중",
+        "requested": "신규요청(견적 대기)",
+        "bidding": "견적 진행중",
+        "matched": "업체 선정 완료",
+        "repairing": "현장 진행중",
+        "completed": "작업 완료",
+        "cancelled": "취소됨",
+    }
+    return mapping.get(status, status)
+
+
+def _send_mail(to_email: str, subject: str, body: str):
+    if not (MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS):
+        raise RuntimeError("SMTP env is not configured")
+    msg = MIMEText(body, _charset="utf-8")
+    msg["Subject"] = subject
+    msg["From"] = MAIL_FROM
+    msg["To"] = to_email
+    with smtplib.SMTP(MAIL_SMTP_HOST, MAIL_SMTP_PORT, timeout=20) as smtp:
+        smtp.starttls()
+        smtp.login(MAIL_SMTP_USER, MAIL_SMTP_PASS)
+        smtp.send_message(msg)
 
 
 def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict) -> bytes:
@@ -472,6 +511,33 @@ async def get_my_profile(user_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/regions/recommend")
+async def recommend_regions(base_region: str):
+    try:
+        base = (base_region or "").strip()
+        if not base:
+            return {"status": "success", "data": []}
+        parts = base.split()
+        prefix = parts[0] if parts else base
+        reqs = (
+            supabase.table("repair_requests")
+            .select("region_summary")
+            .ilike("region_summary", f"{prefix}%")
+            .order("created_at", desc=True)
+            .limit(200)
+            .execute()
+        )
+        unique_regions: List[str] = []
+        for r in reqs.data or []:
+            v = str(r.get("region_summary", "")).strip()
+            if v and v not in unique_regions:
+                unique_regions.append(v)
+        result = [base] + [r for r in unique_regions if r != base]
+        return {"status": "success", "data": result[:8]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/me/profile")
 async def update_my_profile(body: MyProfileUpdate):
     try:
@@ -649,7 +715,7 @@ async def get_market_list(partner_id: str):
             supabase.table("repair_requests")
             .select(
                 "repair_request_id, status, region_summary, building_name, parking_type, "
-                "selected_items, created_at"
+                "selected_items, selected_bid_ids, created_at"
             )
             .in_("status", ["requested", "bidding", "matched"])
             .order("created_at", desc=True)
@@ -657,14 +723,30 @@ async def get_market_list(partner_id: str):
         )
         bid_res = (
             supabase.table("bids")
-            .select("repair_request_id")
+            .select("repair_request_id, bid_id")
             .eq("partner_id", partner_id)
             .execute()
         )
-        bid_ids = [b["repair_request_id"] for b in bid_res.data]
+        my_bids_by_request = {b["repair_request_id"]: b["bid_id"] for b in (bid_res.data or [])}
         market_data = []
-        for r in req_res.data:
-            r["already_bid"] = r["repair_request_id"] in bid_ids
+        for r in req_res.data or []:
+            request_id = r["repair_request_id"]
+            my_bid_id = my_bids_by_request.get(request_id)
+            selected_ids = r.get("selected_bid_ids", []) or []
+            stage_kr = _request_stage_kr(r.get("status", ""))
+            if not my_bid_id:
+                my_status = "미제출"
+            elif my_bid_id in selected_ids:
+                my_status = "내 견적 선택됨"
+            else:
+                my_status = "견적 제출완료"
+            if selected_ids and (not my_bid_id or my_bid_id not in selected_ids):
+                my_status = "타업체 선정됨"
+            r["site_alias"] = _site_alias(request_id)
+            r["building_name"] = None
+            r["already_bid"] = bool(my_bid_id)
+            r["my_bid_status"] = my_status
+            r["request_stage_kr"] = stage_kr
             market_data.append(r)
         return {"status": "success", "data": market_data}
     except Exception as e:
@@ -680,7 +762,7 @@ async def get_market_detail(request_id: int, partner_id: str):
             supabase.table("repair_requests")
             .select(
                 "repair_request_id, status, region_summary, building_name, parking_type, "
-                "selected_items, parsed_data, created_at"
+                "selected_items, selected_bid_ids, parsed_data, created_at"
             )
             .eq("repair_request_id", request_id)
             .execute()
@@ -697,6 +779,19 @@ async def get_market_detail(request_id: int, partner_id: str):
         )
         data = req_res.data[0]
         data["my_bid"] = my_bid.data[0] if my_bid.data else None
+        data["site_alias"] = _site_alias(request_id)
+        data["building_name"] = None
+        selected_ids = data.get("selected_bid_ids", []) or []
+        my_bid_id = data["my_bid"]["bid_id"] if data.get("my_bid") else None
+        if not my_bid_id:
+            data["my_bid_status"] = "미제출"
+        elif my_bid_id in selected_ids:
+            data["my_bid_status"] = "내 견적 선택됨"
+        else:
+            data["my_bid_status"] = "견적 제출완료"
+        if selected_ids and (not my_bid_id or my_bid_id not in selected_ids):
+            data["my_bid_status"] = "타업체 선정됨"
+        data["request_stage_kr"] = _request_stage_kr(data.get("status", ""))
         return {"status": "success", "data": data}
     except HTTPException as e:
         raise e
@@ -916,6 +1011,75 @@ async def admin_update_user_active(
         raise e
     _log_admin_action("update_user_active", admin["email"], {"user_id": user_id, "is_active": body.is_active})
     return {"status": "success"}
+
+
+@app.post("/api/notifications/process")
+async def process_notification_queue(cron_secret: Optional[str] = Header(default=None)):
+    try:
+        if not MAIL_CRON_SECRET:
+            raise HTTPException(status_code=500, detail="MAIL_CRON_SECRET 설정이 필요합니다.")
+        if cron_secret != MAIL_CRON_SECRET:
+            raise HTTPException(status_code=403, detail="잘못된 cron_secret 입니다.")
+        rows = (
+            supabase.table("notification_queue")
+            .select("notification_id, event_type, user_id, payload, status")
+            .eq("status", "pending")
+            .order("created_at", desc=False)
+            .limit(50)
+            .execute()
+        )
+        processed = 0
+        failed = 0
+        for n in rows.data or []:
+            n_id = n["notification_id"]
+            try:
+                profile = (
+                    supabase.table("profiles")
+                    .select("id, name")
+                    .eq("id", n["user_id"])
+                    .limit(1)
+                    .execute()
+                )
+                if not profile.data:
+                    raise RuntimeError("user profile not found")
+                auth_user = supabase.auth.admin.get_user_by_id(n["user_id"])
+                email = getattr(getattr(auth_user, "user", None), "email", None)
+                if not email:
+                    raise RuntimeError("user email not found")
+
+                payload = n.get("payload") or {}
+                if n["event_type"] == "first_bid_submitted":
+                    subject = "[Fix&Pass] 최초 견적 제출이 접수되었습니다"
+                    body = (
+                        "최초 견적 제출이 정상 접수되었습니다.\n\n"
+                        f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
+                        "의뢰인이 업체를 선택하면 추가 안내 메일이 발송됩니다."
+                    )
+                elif n["event_type"] == "requester_selected_partner":
+                    subject = "[Fix&Pass] 의뢰인이 업체를 선택했습니다"
+                    body = (
+                        "축하합니다. 제출하신 견적이 의뢰인에게 선택되었습니다.\n\n"
+                        f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
+                        f"- 선택된 견적 ID: {payload.get('selected_bid_id')}\n"
+                        "서비스에서 상세 진행 상태를 확인해주세요."
+                    )
+                else:
+                    subject = "[Fix&Pass] 알림"
+                    body = f"새 알림이 도착했습니다. event_type={n['event_type']}"
+
+                _send_mail(email, subject, body)
+                supabase.table("notification_queue").update({"status": "sent"}).eq("notification_id", n_id).execute()
+                processed += 1
+            except Exception as e:
+                supabase.table("notification_queue").update(
+                    {"status": "failed", "payload": {**(n.get("payload") or {}), "error": str(e)}}
+                ).eq("notification_id", n_id).execute()
+                failed += 1
+        return {"status": "success", "data": {"processed": processed, "failed": failed}}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/admin/stats/trends")
