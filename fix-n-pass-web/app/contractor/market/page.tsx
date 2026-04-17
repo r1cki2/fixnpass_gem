@@ -12,6 +12,8 @@ export default function ContractorMarketPage() {
   const [requests, setRequests] = useState<any[]>([]);
   const [serviceRegions, setServiceRegions] = useState<string[]>([]);
   const [regionFilter, setRegionFilter] = useState<string>("ALL");
+  const [requestStatusFilter, setRequestStatusFilter] = useState<string>("ALL");
+  const [myStatusFilter, setMyStatusFilter] = useState<string>("ALL");
 
   useEffect(() => {
     const checkAccess = async () => {
@@ -48,7 +50,7 @@ export default function ContractorMarketPage() {
       setIsAuthorized(true);
       const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
       const [marketRes, myRes] = await Promise.all([
-        fetch(`${baseUrl}/api/contractor/market?partner_id=${session.user.id}`),
+        fetch(`${baseUrl}/api/contractor/market?partner_id=${session.user.id}&request_status=${encodeURIComponent(requestStatusFilter)}&my_status_filter=${encodeURIComponent(myStatusFilter)}`),
         fetch(`${baseUrl}/api/me/profile?user_id=${session.user.id}`),
       ]);
       const marketJson = await marketRes.json();
@@ -60,7 +62,7 @@ export default function ContractorMarketPage() {
     };
 
     checkAccess();
-  }, [router]);
+  }, [router, requestStatusFilter, myStatusFilter]);
 
   // 검사가 진행 중일 때 보여줄 로딩 화면
   if (isLoading) {
@@ -112,6 +114,25 @@ export default function ContractorMarketPage() {
             ))}
           </select>
         </div>
+        <div className="flex items-center gap-2 mt-2">
+          <span className="text-xs text-slate-500">요청 상태</span>
+          <select value={requestStatusFilter} onChange={(e) => setRequestStatusFilter(e.target.value)} className="border rounded-lg px-2 py-1 text-sm">
+            <option value="ALL">전체</option>
+            <option value="requested">신규요청</option>
+            <option value="bidding">견적중</option>
+            <option value="matched">업체선정</option>
+            <option value="repairing">진행중</option>
+            <option value="completed">완료</option>
+          </select>
+          <span className="text-xs text-slate-500 ml-2">내 상태</span>
+          <select value={myStatusFilter} onChange={(e) => setMyStatusFilter(e.target.value)} className="border rounded-lg px-2 py-1 text-sm">
+            <option value="ALL">전체</option>
+            <option value="미제출">미제출</option>
+            <option value="견적 제출완료">견적 제출완료</option>
+            <option value="내 견적 선택됨">내 견적 선택됨</option>
+            <option value="타업체 선정됨">타업체 선정됨</option>
+          </select>
+        </div>
       </div>
 
       <div className="grid gap-4">
@@ -133,6 +154,7 @@ export default function ContractorMarketPage() {
               </span>
             </div>
             <p className="text-sm text-gray-500 mb-3">{req.region_summary}</p>
+            <p className="text-xs text-slate-400 mb-1">최초 등록일: {req.created_at ? new Date(req.created_at).toLocaleDateString("ko-KR") : "-"}</p>
             <div className="text-xs text-indigo-600 mb-2">요청 상태: {req.request_stage_kr || req.status}</div>
             <div className="text-sm text-gray-700 mb-2">
               요청 항목: <span className="font-semibold">{req.selected_items?.length || 0}개</span>

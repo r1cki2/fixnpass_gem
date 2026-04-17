@@ -250,6 +250,87 @@ def _send_mail(to_email: str, subject: str, body: str):
         smtp.send_message(msg)
 
 
+def _normalize_region_summary(address_text: str) -> str:
+    """
+    주소 문자열에서 시/도 + 시/군/구까지만 추출한다.
+    """
+    text = (address_text or "").strip()
+    if not text:
+        return ""
+    parts = [p for p in re.split(r"\s+", text) if p]
+    if len(parts) >= 2:
+        return f"{parts[0]} {parts[1]}"
+    return parts[0]
+
+
+def _enqueue_and_maybe_send(event_type: str, user_id: str, payload: dict):
+    try:
+        inserted = (
+            supabase.table("notification_queue")
+            .insert(
+                {
+                    "event_type": event_type,
+                    "user_id": user_id,
+                    "payload": payload,
+                    "status": "pending",
+                }
+            )
+            .execute()
+        )
+        n_id = inserted.data[0]["notification_id"] if inserted.data else None
+    except Exception as e:
+        logging.warning("notification_queue insert failed: %s", str(e))
+        return
+
+    if not (MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS):
+        return
+
+    try:
+        auth_user = supabase.auth.admin.get_user_by_id(user_id)
+        email = getattr(getattr(auth_user, "user", None), "email", None)
+        if not email:
+            return
+        if event_type == "new_request_in_interest_region":
+            subject = "[Fix&Pass] 관심 지역 신규 요청이 등록되었습니다"
+            body = (
+                "관심 지역에 신규 수리 요청이 등록되었습니다.\n\n"
+                f"- 현장 별칭: {payload.get('site_alias')}\n"
+                f"- 요청 ID: {payload.get('repair_request_id')}\n"
+                f"- 지역: {payload.get('region_summary')}\n"
+                "수리 마켓에서 상세를 확인해주세요."
+            )
+        elif event_type == "first_bid_submitted":
+            subject = "[Fix&Pass] 최초 견적 제출이 접수되었습니다"
+            body = (
+                "최초 견적 제출이 정상 접수되었습니다.\n\n"
+                f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
+                "의뢰인이 업체를 선택하면 추가 안내 메일이 발송됩니다."
+            )
+        elif event_type == "requester_selected_partner":
+            subject = "[Fix&Pass] 의뢰인이 업체를 선택했습니다"
+            body = (
+                "축하합니다. 제출하신 견적이 의뢰인에게 선택되었습니다.\n\n"
+                f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
+                f"- 선택된 견적 ID: {payload.get('selected_bid_id')}\n"
+                "서비스에서 상세 진행 상태를 확인해주세요."
+            )
+        elif event_type == "new_bid_for_requester":
+            subject = "[Fix&Pass] 요청하신 건에 신규 견적이 등록되었습니다"
+            body = (
+                "요청하신 수리 건에 신규 견적이 등록되었습니다.\n\n"
+                f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
+                "내 요청 내역에서 견적을 확인해 주세요."
+            )
+        else:
+            subject = "[Fix&Pass] 알림"
+            body = f"새 알림이 도착했습니다. event_type={event_type}"
+        _send_mail(email, subject, body)
+        if n_id:
+            supabase.table("notification_queue").update({"status": "sent"}).eq("notification_id", n_id).execute()
+    except Exception as e:
+        logging.warning("immediate mail send failed: %s", str(e))
+
+
 def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict) -> bytes:
     """
     원본 PDF 레이아웃/사진은 유지하고, 민감 텍스트만 가린 업체용 PDF를 생성한다.
@@ -347,7 +428,7 @@ async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File
         # 4) DB 저장
         insert_data = {
             "status": "draft",
-            "region_summary": ai_data.get("region_summary", "위치 미확인"),
+            "region_summary": _normalize_region_summary(ai_data.get("region_summary", "위치 미확인")),
             "address_detail": ai_data.get("address_detail", ""),
             "building_name": ai_data.get("building_name", "건물명 미확인"),
             "parking_type": ai_data.get("parking_type", "기종 확인 불가"),
@@ -405,6 +486,41 @@ async def update_request(req: UpdateRequest):
                 "status": req.status,
             }
         ).eq("repair_request_id", req.repair_request_id).execute()
+        # 요청 등록 시: 관심 지역 업체들에게 알림 큐 + 즉시 메일 시도
+        if req.status == "requested":
+            req_row = (
+                supabase.table("repair_requests")
+                .select("repair_request_id, region_summary")
+                .eq("repair_request_id", req.repair_request_id)
+                .limit(1)
+                .execute()
+            )
+            if req_row.data:
+                row = req_row.data[0]
+                region = row.get("region_summary", "")
+                region_norm = _normalize_region_summary(region)
+                try:
+                    partners = (
+                        supabase.table("partner_profiles")
+                        .select("partner_id, service_regions")
+                        .contains("service_regions", [region_norm])
+                        .execute()
+                    )
+                    for p in partners.data or []:
+                        profile = _get_profile(p["partner_id"])
+                        if not profile or profile.get("is_active") is False:
+                            continue
+                        _enqueue_and_maybe_send(
+                            "new_request_in_interest_region",
+                            p["partner_id"],
+                            {
+                                "repair_request_id": req.repair_request_id,
+                                "region_summary": region_norm,
+                                "site_alias": _site_alias(req.repair_request_id),
+                            },
+                        )
+                except Exception:
+                    pass
         return {"status": "success"}
     except HTTPException as e:
         raise e
@@ -517,8 +633,9 @@ async def recommend_regions(base_region: str):
         base = (base_region or "").strip()
         if not base:
             return {"status": "success", "data": []}
-        parts = base.split()
-        prefix = parts[0] if parts else base
+        base_norm = _normalize_region_summary(base)
+        parts = base_norm.split()
+        prefix = parts[0] if parts else base_norm
         reqs = (
             supabase.table("repair_requests")
             .select("region_summary")
@@ -532,7 +649,27 @@ async def recommend_regions(base_region: str):
             v = str(r.get("region_summary", "")).strip()
             if v and v not in unique_regions:
                 unique_regions.append(v)
-        result = [base] + [r for r in unique_regions if r != base]
+        # cross-sido 인접 추천(수도권 우선)
+        adjacent_sido_map = {
+            "서울특별시": ["경기도", "인천광역시"],
+            "경기도": ["서울특별시", "인천광역시", "강원특별자치도", "충청북도", "충청남도"],
+            "인천광역시": ["서울특별시", "경기도"],
+        }
+        extra = []
+        for adj in adjacent_sido_map.get(prefix, []):
+            adj_rows = (
+                supabase.table("repair_requests")
+                .select("region_summary")
+                .ilike("region_summary", f"{adj}%")
+                .order("created_at", desc=True)
+                .limit(80)
+                .execute()
+            )
+            for r in adj_rows.data or []:
+                v = _normalize_region_summary(str(r.get("region_summary", "")).strip())
+                if v and v not in extra:
+                    extra.append(v)
+        result = [base_norm] + [r for r in unique_regions if r != base_norm] + extra
         return {"status": "success", "data": result[:8]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -559,10 +696,12 @@ async def update_my_profile(body: MyProfileUpdate):
             effective_role = profile.get("role") if profile else None
 
         if effective_role == "contractor":
+            normalized_regions = [_normalize_region_summary(r) for r in (body.service_regions or []) if str(r).strip()]
+            normalized_regions = list(dict.fromkeys([r for r in normalized_regions if r]))
             upsert_payload = {
                 "partner_id": body.user_id,
                 "business_location": body.business_location or "",
-                "service_regions": body.service_regions or [],
+                "service_regions": normalized_regions,
                 "years_experience": body.years_experience,
                 "employee_count": body.employee_count,
                 "intro": body.intro or "",
@@ -666,6 +805,31 @@ async def get_bids_for_request(request_id: int, requester_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/my-requests/{request_id}/cancel")
+async def cancel_request(request_id: int, requester_id: str):
+    try:
+        _require_active_role(requester_id, ["requester"], "requester")
+        req_res = (
+            supabase.table("repair_requests")
+            .select("repair_request_id, requester_id, status")
+            .eq("repair_request_id", request_id)
+            .eq("requester_id", requester_id)
+            .limit(1)
+            .execute()
+        )
+        if not req_res.data:
+            raise HTTPException(status_code=404, detail="요청 건을 찾을 수 없습니다.")
+        status = req_res.data[0].get("status")
+        if status not in ["requested", "bidding"]:
+            raise HTTPException(status_code=400, detail="현재 상태에서는 취소할 수 없습니다.")
+        supabase.table("repair_requests").update({"status": "cancelled"}).eq("repair_request_id", request_id).execute()
+        return {"status": "success"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/requests/{request_id}/pdf")
 async def get_request_pdf_url(request_id: int, viewer: str, user_id: str):
     """
@@ -707,7 +871,7 @@ async def get_request_pdf_url(request_id: int, viewer: str, user_id: str):
 
 
 @app.get("/api/contractor/market")
-async def get_market_list(partner_id: str):
+async def get_market_list(partner_id: str, request_status: Optional[str] = None, my_status_filter: Optional[str] = None):
     """수리업체용: 지역(시/군/구)+수리항목 중심 마켓 목록(상세주소 비노출)."""
     try:
         _require_active_role(partner_id, ["contractor"], "contractor")
@@ -717,7 +881,7 @@ async def get_market_list(partner_id: str):
                 "repair_request_id, status, region_summary, building_name, parking_type, "
                 "selected_items, selected_bid_ids, created_at"
             )
-            .in_("status", ["requested", "bidding", "matched"])
+            .in_("status", ["requested", "bidding", "matched", "repairing", "completed"])
             .order("created_at", desc=True)
             .execute()
         )
@@ -735,18 +899,22 @@ async def get_market_list(partner_id: str):
             selected_ids = r.get("selected_bid_ids", []) or []
             stage_kr = _request_stage_kr(r.get("status", ""))
             if not my_bid_id:
-                my_status = "미제출"
+                my_bid_status = "미제출"
             elif my_bid_id in selected_ids:
-                my_status = "내 견적 선택됨"
+                my_bid_status = "내 견적 선택됨"
             else:
-                my_status = "견적 제출완료"
+                my_bid_status = "견적 제출완료"
             if selected_ids and (not my_bid_id or my_bid_id not in selected_ids):
-                my_status = "타업체 선정됨"
+                my_bid_status = "타업체 선정됨"
             r["site_alias"] = _site_alias(request_id)
             r["building_name"] = None
             r["already_bid"] = bool(my_bid_id)
-            r["my_bid_status"] = my_status
+            r["my_bid_status"] = my_bid_status
             r["request_stage_kr"] = stage_kr
+            if request_status and request_status != "ALL" and r.get("status") != request_status:
+                continue
+            if my_status_filter and my_status_filter != "ALL" and r.get("my_bid_status") != my_status_filter:
+                continue
             market_data.append(r)
         return {"status": "success", "data": market_data}
     except Exception as e:
@@ -865,13 +1033,27 @@ async def submit_bid(bid: BidSubmission):
                 .execute()
             )
         if is_first_bid:
-            _enqueue_notification(
+            _enqueue_and_maybe_send(
                 "first_bid_submitted",
                 bid.partner_id,
                 {
                     "repair_request_id": bid.repair_request_id,
                     "bid_id": res.data[0].get("bid_id"),
                 },
+            )
+        # 의뢰인에게 신규 견적 등록 알림
+        req_owner = (
+            supabase.table("repair_requests")
+            .select("requester_id")
+            .eq("repair_request_id", bid.repair_request_id)
+            .limit(1)
+            .execute()
+        )
+        if req_owner.data and req_owner.data[0].get("requester_id"):
+            _enqueue_and_maybe_send(
+                "new_bid_for_requester",
+                req_owner.data[0]["requester_id"],
+                {"repair_request_id": bid.repair_request_id, "bid_id": res.data[0].get("bid_id")},
             )
         return {"status": "success", "data": res.data[0]}
     except HTTPException as e:
@@ -910,7 +1092,7 @@ async def match_partners(data: MatchPartners):
                 .execute()
             )
             for b in selected_bids.data or []:
-                _enqueue_notification(
+                _enqueue_and_maybe_send(
                     "requester_selected_partner",
                     b.get("partner_id"),
                     {

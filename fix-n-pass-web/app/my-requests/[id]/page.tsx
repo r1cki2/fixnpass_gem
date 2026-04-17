@@ -82,6 +82,19 @@ export default function RequestDetailPage() {
     }
   };
 
+  const handleCancelRequest = async () => {
+    if (!userId) return alert("로그인이 필요합니다.");
+    if (!confirm("견적 요청을 취소하시겠습니까?")) return;
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+    const res = await fetch(`${baseUrl}/api/my-requests/${requestId}/cancel?requester_id=${userId}`, {
+      method: "POST",
+    });
+    const json = await res.json();
+    if (!res.ok) return alert(json.detail || "취소 실패");
+    alert("요청이 취소되었습니다.");
+    router.push("/my-requests");
+  };
+
   if (loading) return <div className="min-h-screen flex items-center justify-center">로딩 중...</div>;
 
   return (
@@ -111,6 +124,16 @@ export default function RequestDetailPage() {
                 </div>
              ))}
           </div>
+          {(reqData.status === "requested" || reqData.status === "bidding") && (
+            <div className="mt-6">
+              <button
+                onClick={handleCancelRequest}
+                className="px-4 py-2 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 font-semibold text-sm"
+              >
+                견적 요청 취소
+              </button>
+            </div>
+          )}
         </div>
 
         {/* 베타 테스트 알림 */}
