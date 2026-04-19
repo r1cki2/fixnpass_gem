@@ -3,6 +3,10 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
+import {
+  clearPendingQuoteRequest,
+  submitPendingQuoteRequest,
+} from "@/lib/pendingQuote";
 import AddressSearchInput from "@/components/AddressSearchInput";
 import { REGION_OPTIONS_BY_SIDO, SIDO_OPTIONS } from "@/lib/regions";
 
@@ -55,7 +59,7 @@ export default function OnboardingPage() {
       return;
     }
     if (role === "contractor" && (!companyName.trim() || !region.trim())) {
-      alert("업체명과 활동 지역은 필수입니다.");
+      alert("업체명(필수)과 활동 지역은 필수입니다.");
       return;
     }
     if (role === "contractor" && !serviceRegionsInput.trim()) {
@@ -64,10 +68,17 @@ export default function OnboardingPage() {
     }
     setIsLoading(true);
 
+    const { data: sess } = await supabase.auth.getSession();
+    const md = sess.session?.user?.user_metadata || {};
+    const displayName = (typeof md.name === "string" && md.name.trim()) ? md.name.trim() : "";
+
     const profilePayload: any = {
       role,
       phone_number: phoneNumber.replace(/[^0-9]/g, ""),
     };
+    if (displayName) {
+      profilePayload.name = displayName;
+    }
     if (role === "contractor") {
       profilePayload.company_name = companyName.trim();
     }
@@ -99,6 +110,7 @@ export default function OnboardingPage() {
     }
 
     if (role === "contractor") {
+      clearPendingQuoteRequest();
       const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
       const serviceRegions = serviceRegionsInput
         .split(",")
@@ -125,6 +137,14 @@ export default function OnboardingPage() {
     }
 
     if (role === "requester") {
+      const pend = await submitPendingQuoteRequest(userId);
+      if (pend.ok) {
+        alert(
+          "비회원으로 분석·선택하신 항목으로 견적 요청을 완료했습니다.\n\n견적 요청 마감 기한은 2주입니다."
+        );
+        router.push("/my-requests");
+        return;
+      }
       router.push("/");
     } else {
       router.push("/contractor/market");
@@ -210,13 +230,16 @@ export default function OnboardingPage() {
         {role === "contractor" && (
           <>
             <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">업체명</label>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                업체명 <span className="text-rose-600">(필수)</span>
+              </label>
               <input
                 type="text"
                 value={companyName}
                 onChange={(e) => setCompanyName(e.target.value)}
                 className="w-full px-4 py-3 border rounded-lg"
                 placeholder="예: OO기계식주차 보수"
+                required
               />
             </div>
             <div>

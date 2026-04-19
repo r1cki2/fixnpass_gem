@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Clock, ChevronRight, Building2, FileText, AlertTriangle } from 'lucide-react';
+import { Clock, ChevronRight, Building2, FileText, AlertTriangle, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { submitPendingQuoteRequest } from '@/lib/pendingQuote';
 
 export default function MyRequestsPage() {
   const [requests, setRequests] = useState<any[]>([]);
@@ -27,6 +28,12 @@ export default function MyRequestsPage() {
           alert("수리업체 계정은 내 요청 내역에 접근할 수 없습니다.");
           window.location.href = "/contractor/market";
           return;
+        }
+        const pending = await submitPendingQuoteRequest(user.id);
+        if (pending.ok) {
+          alert(
+            "이전에 비회원으로 분석·선택하신 항목으로 견적 요청을 완료했습니다.\n\n견적 요청 마감 기한은 2주입니다."
+          );
         }
         const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
         const res = await fetch(`${baseUrl}/api/my-requests?requester_id=${user.id}`);

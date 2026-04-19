@@ -100,7 +100,7 @@ export default function SignupPage() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">이메일</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">이메일 (로그인 아이디)</label>
           <input
             type="email"
             value={email}
@@ -109,6 +109,9 @@ export default function SignupPage() {
             placeholder="you@example.com"
             required
           />
+          <p className="text-xs text-gray-500 mt-1">
+            로그인 시에는 이메일 주소가 아이디로 사용됩니다.
+          </p>
         </div>
 
         <div>

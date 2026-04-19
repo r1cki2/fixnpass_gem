@@ -7,6 +7,7 @@ import {
   Loader2, Square, CheckSquare, ArrowRight, Info 
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { savePendingQuoteRequest, submitPendingQuoteRequest } from '@/lib/pendingQuote';
 import { useRouter } from 'next/navigation';
 
 export default function IntroPage() {
@@ -34,6 +35,14 @@ export default function IntroPage() {
         setRole(r);
         if (r === "contractor") {
           router.replace("/contractor/market");
+        } else if (r === "requester" && currentUser?.id) {
+          const done = await submitPendingQuoteRequest(currentUser.id);
+          if (done.ok) {
+            alert(
+              "이전에 비회원으로 분석·선택하신 항목으로 견적 요청을 완료했습니다.\n\n견적 요청 마감 기한은 2주입니다."
+            );
+            router.replace("/my-requests");
+          }
         }
       } else {
         setRole(null);
@@ -119,8 +128,14 @@ export default function IntroPage() {
       return;
     }
     if (!user?.id) {
-      alert('견적 요청 접수를 위해 로그인/회원가입이 필요합니다.');
-      router.push('/login');
+      savePendingQuoteRequest({
+        repair_request_id: analysisResult.repair_request_id,
+        selected_items: selectedItems,
+      });
+      alert(
+        "로그인 또는 회원가입 후, 다시 PDF를 올리지 않아도 방금 분석하신 내용으로 견적 요청이 자동 완료됩니다."
+      );
+      router.push("/login?next=%2Fmy-requests");
       return;
     }
     

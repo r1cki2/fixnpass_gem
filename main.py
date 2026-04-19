@@ -13,7 +13,7 @@ from typing import List, Optional
 
 import fitz
 import httpx
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import Client, create_client
@@ -44,7 +44,9 @@ MAIL_SMTP_PORT = int(os.environ.get("MAIL_SMTP_PORT", "587"))
 MAIL_SMTP_USER = os.environ.get("MAIL_SMTP_USER", "")
 MAIL_SMTP_PASS = os.environ.get("MAIL_SMTP_PASS", "")
 MAIL_FROM = os.environ.get("MAIL_FROM", MAIL_SMTP_USER or "no-reply@fixnpass.local")
-MAIL_CRON_SECRET = os.environ.get("MAIL_CRON_SECRET", "")
+MAIL_CRON_SECRET = (
+    os.environ.get("MAIL_CRON_SECRET") or os.environ.get("NOTIFICATION_CRON_SECRET") or ""
+).strip()
 
 ORIGINAL_BUCKET = "inspection-original"
 MASKED_BUCKET = "inspection-masked"
@@ -1796,12 +1798,34 @@ async def admin_update_user_active(
 
 
 @app.post("/api/notifications/process")
-async def process_notification_queue(cron_secret: Optional[str] = Header(default=None)):
+async def process_notification_queue(
+    cron_secret: Optional[str] = Header(default=None, alias="cron-secret"),
+    x_cron_secret: Optional[str] = Header(default=None, alias="X-Cron-Secret"),
+    x_mail_cron: Optional[str] = Header(default=None, alias="X-Mail-Cron-Secret"),
+    cron_secret_q: Optional[str] = Query(default=None, alias="cron_secret"),
+):
     try:
         if not MAIL_CRON_SECRET:
-            raise HTTPException(status_code=500, detail="MAIL_CRON_SECRET 설정이 필요합니다.")
-        if cron_secret != MAIL_CRON_SECRET:
-            raise HTTPException(status_code=403, detail="잘못된 cron_secret 입니다.")
+            raise HTTPException(
+                status_code=500,
+                detail="MAIL_CRON_SECRET(또는 NOTIFICATION_CRON_SECRET) 환경변수가 필요합니다.",
+            )
+        provided = (
+            (cron_secret or "").strip()
+            or (x_cron_secret or "").strip()
+            or (x_mail_cron or "").strip()
+            or (cron_secret_q or "").strip()
+        )
+        if provided != MAIL_CRON_SECRET:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "잘못된 cron_secret 입니다. Render 등에서는 "
+                    "헤더 `cron-secret`(권장) 또는 `X-Cron-Secret`, "
+                    "또는 쿼리 `?cron_secret=` 값이 서버의 MAIL_CRON_SECRET과 "
+                    "동일한지(공백 없이) 확인하세요."
+                ),
+            )
         rows = (
             supabase.table("notification_queue")
             .select("notification_id, event_type, user_id, payload, status")

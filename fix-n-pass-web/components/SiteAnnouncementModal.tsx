@@ -1,41 +1,45 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { X } from "lucide-react";
 
 type Announcement = { id: number; title?: string | null; message: string; updated_at?: string };
 
 export default function SiteAnnouncementModal() {
+  const pathname = usePathname();
   const [item, setItem] = useState<Announcement | null>(null);
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
+    if (pathname !== "/") {
+      setOpen(false);
+      setItem(null);
+      return;
+    }
     const base = process.env.NEXT_PUBLIC_API_BASE_URL;
     if (!base) return;
+    let cancelled = false;
     (async () => {
       try {
         const res = await fetch(`${base}/api/site-announcement`);
         const json = await res.json();
         const d = json.data as Announcement | null;
-        if (!d?.message?.trim()) return;
-        const key = `fixnpass_popup_dismiss_${d.id}`;
-        if (typeof window !== "undefined" && localStorage.getItem(key)) return;
+        if (cancelled || !d?.message?.trim()) return;
         setItem(d);
         setOpen(true);
       } catch {
         /* ignore */
       }
     })();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
 
-  if (!open || !item) return null;
+  if (pathname !== "/" || !open || !item) return null;
 
   const dismiss = () => {
-    try {
-      localStorage.setItem(`fixnpass_popup_dismiss_${item.id}`, "1");
-    } catch {
-      /* ignore */
-    }
     setOpen(false);
   };
 
