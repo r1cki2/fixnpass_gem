@@ -110,6 +110,15 @@ export default function ContractorBidPage() {
 
   if (!req) return <div className="min-h-screen bg-slate-50 flex items-center justify-center">로딩 중...</div>;
 
+  const deadlineLabel = req.quote_deadline_at
+    ? new Date(req.quote_deadline_at).toLocaleDateString("ko-KR")
+    : "-";
+  const myBidAt = req.my_bid?.created_at
+    ? new Date(req.my_bid.created_at).toLocaleDateString("ko-KR")
+    : hasBid
+      ? "-"
+      : "미제출";
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-6 pb-20 font-sans">
       <div className="max-w-3xl mx-auto pt-8">
@@ -117,12 +126,18 @@ export default function ContractorBidPage() {
           <ArrowLeft className="w-5 h-5" /> 돌아가기
         </button>
 
+        <p className="text-sm text-slate-600 mb-4 leading-relaxed">
+          제출하신 견적이 선택될 경우 연락처, 주소 등 상세 정보가 공개됩니다.
+        </p>
+
         <div className="bg-white border border-slate-200 rounded-[2.5rem] p-10 shadow-sm mb-8">
           <div className="flex justify-between items-start mb-10">
             <div>
               <h1 className="text-3xl font-black text-slate-900 mb-2">{req.site_alias || "비공개 현장"}</h1>
               <p className="text-slate-500 font-medium">{req.region_summary} · {req.parking_type}</p>
               <p className="text-xs text-slate-400 mt-1">요청 상태: {req.request_stage_kr || req.status}</p>
+              <p className="text-xs text-slate-500 mt-2">견적 마감일: {deadlineLabel}</p>
+              <p className="text-xs text-slate-500">내 견적 등록일: {myBidAt}</p>
             </div>
             {isMatched ? (
               <span className="bg-indigo-100 text-indigo-700 px-4 py-2 rounded-2xl text-sm font-black flex items-center gap-2">
@@ -152,9 +167,6 @@ export default function ContractorBidPage() {
           >
             업체용 마스킹 PDF 보기
           </button>
-          <p className="text-xs text-slate-500 mb-6">
-            제출하신 견적이 선택될 경우 연락처, 주소 등 상세 정보가 공개됩니다.
-          </p>
 
           <div className="border-t border-slate-100 pt-10">
             <div className={`rounded-[2rem] p-8 text-white shadow-xl ${canEdit ? 'bg-blue-600 shadow-blue-100' : 'bg-slate-400 shadow-none'}`}>
@@ -176,8 +188,11 @@ export default function ContractorBidPage() {
                 <div className={`${canEdit ? 'bg-blue-700/50' : 'bg-slate-500/50'} p-4 rounded-xl flex items-start gap-3`}>
                   <Info className="w-5 h-5 text-white opacity-80 shrink-0 mt-0.5" />
                   <p className="text-xs text-white opacity-90 leading-relaxed font-medium">
-                    {isMatched ? "이미 매칭된 요청은 금액을 수정할 수 없습니다." : 
-                     "견적액은 제출 후 의뢰인 선택 전까지 1회만 수정 가능합니다."}
+                    {isMatched
+                      ? "이미 매칭된 요청은 금액을 수정할 수 없습니다."
+                      : hasBid
+                        ? "견적액은 제출 후 의뢰인 선택 전까지 1회만 수정 가능합니다."
+                        : "최초 견적의 유효기간은 견적 요청 마감까지이며, 수정은 선택되기 전까지 1회만 가능합니다."}
                   </p>
                 </div>
 

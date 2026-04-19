@@ -90,7 +90,9 @@ export default function ContractorMarketPage() {
   return (
     <div className="max-w-5xl mx-auto mt-10 p-6">
       <h1 className="text-3xl font-bold text-gray-800 mb-2">수리 마켓 (업체 전용)</h1>
-      <p className="text-gray-600 mb-8">상세주소는 비공개이며, 지역(구)과 수리 항목만 표시됩니다.</p>
+      <p className="text-gray-600 mb-8 text-sm leading-relaxed">
+        제출하신 견적이 선택될 경우 연락처, 주소 등 상세 정보가 공개됩니다.
+      </p>
       <div className="mb-5 bg-white border rounded-xl p-4">
         <p className="text-xs text-slate-500 mb-2">내 관심 지역</p>
         <div className="flex flex-wrap gap-2 mb-3">
@@ -154,14 +156,27 @@ export default function ContractorMarketPage() {
               </span>
             </div>
             <p className="text-sm text-gray-500 mb-3">{req.region_summary}</p>
-            <p className="text-xs text-slate-400 mb-1">최초 등록일: {req.created_at ? new Date(req.created_at).toLocaleDateString("ko-KR") : "-"}</p>
+            <p className="text-xs text-slate-400 mb-1">
+              요청 등록일: {req.created_at ? new Date(req.created_at).toLocaleDateString("ko-KR") : "-"}
+            </p>
+            <p className="text-xs text-slate-500 mb-1">
+              견적 마감일:{" "}
+              {req.quote_deadline_at
+                ? new Date(req.quote_deadline_at).toLocaleDateString("ko-KR")
+                : "-"}
+            </p>
+            <p className="text-xs text-slate-500 mb-2">
+              내 견적 등록일:{" "}
+              {req.my_bid_submitted_at
+                ? new Date(req.my_bid_submitted_at).toLocaleDateString("ko-KR")
+                : req.already_bid
+                  ? "-"
+                  : "미제출"}
+            </p>
             <div className="text-xs text-indigo-600 mb-2">요청 상태: {req.request_stage_kr || req.status}</div>
-            <div className="text-sm text-gray-700 mb-2">
+            <div className="text-sm text-gray-700">
               요청 항목: <span className="font-semibold">{req.selected_items?.length || 0}개</span>
             </div>
-            <p className="text-xs text-slate-500">
-              제출하신 견적이 선택될 경우 연락처, 주소 등 상세 정보가 공개됩니다.
-            </p>
           </Link>
         ))}
       </div>

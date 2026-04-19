@@ -5,7 +5,7 @@ import os
 import re
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from typing import List, Optional
 
@@ -68,6 +68,7 @@ RATE_LIMITS = {
     "update_request": {"limit": 20, "window_sec": 60},
     "submit_bid": {"limit": 20, "window_sec": 60},
     "match_partners": {"limit": 10, "window_sec": 60},
+    "inquiry_create": {"limit": 15, "window_sec": 120},
 }
 _rate_counters: dict[str, List[datetime]] = {}
 
@@ -116,6 +117,15 @@ def _require_admin(authorization: Optional[str]) -> dict:
     return {"id": user.id, "email": email}
 
 
+def _require_authenticated_user(authorization: Optional[str]) -> dict:
+    token = _extract_bearer(authorization)
+    user_res = supabase.auth.get_user(token)
+    user = getattr(user_res, "user", None)
+    if not user or not user.id:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+    return {"id": user.id, "email": (user.email or "").lower()}
+
+
 class UpdateRequest(BaseModel):
     repair_request_id: int
     requester_id: str
@@ -149,6 +159,20 @@ class AdminRequestMatchUpdate(BaseModel):
 
 class AdminUserActiveUpdate(BaseModel):
     is_active: bool
+
+
+class InquiryCreate(BaseModel):
+    title: str
+    body: str
+
+
+class InquiryReplyCreate(BaseModel):
+    body: str
+
+
+class SiteAnnouncementDeploy(BaseModel):
+    title: Optional[str] = None
+    message: str
 
 
 class MyProfileUpdate(BaseModel):
@@ -469,23 +493,27 @@ async def update_request(req: UpdateRequest):
         _require_active_role(req.requester_id, ["requester"], "requester")
         existing = (
             supabase.table("repair_requests")
-            .select("repair_request_id, requester_id")
+            .select("repair_request_id, requester_id, status, quote_deadline_at")
             .eq("repair_request_id", req.repair_request_id)
             .execute()
         )
         if not existing.data:
             raise HTTPException(status_code=404, detail="요청 건을 찾을 수 없습니다.")
-        current_requester = existing.data[0].get("requester_id")
+        row0 = existing.data[0]
+        current_requester = row0.get("requester_id")
         if current_requester and current_requester != req.requester_id:
             raise HTTPException(status_code=403, detail="권한이 없습니다.")
 
-        supabase.table("repair_requests").update(
-            {
-                "requester_id": req.requester_id,
-                "selected_items": req.selected_items,
-                "status": req.status,
-            }
-        ).eq("repair_request_id", req.repair_request_id).execute()
+        update_payload = {
+            "requester_id": req.requester_id,
+            "selected_items": req.selected_items,
+            "status": req.status,
+        }
+        if req.status == "requested" and not row0.get("quote_deadline_at"):
+            update_payload["quote_deadline_at"] = (datetime.utcnow() + timedelta(days=14)).isoformat() + "Z"
+        supabase.table("repair_requests").update(update_payload).eq(
+            "repair_request_id", req.repair_request_id
+        ).execute()
         # 요청 등록 시: 관심 지역 업체들에게 알림 큐 + 즉시 메일 시도
         if req.status == "requested":
             req_row = (
@@ -879,7 +907,7 @@ async def get_market_list(partner_id: str, request_status: Optional[str] = None,
             supabase.table("repair_requests")
             .select(
                 "repair_request_id, status, region_summary, building_name, parking_type, "
-                "selected_items, selected_bid_ids, created_at"
+                "selected_items, selected_bid_ids, created_at, quote_deadline_at"
             )
             .in_("status", ["requested", "bidding", "matched", "repairing", "completed"])
             .order("created_at", desc=True)
@@ -887,15 +915,23 @@ async def get_market_list(partner_id: str, request_status: Optional[str] = None,
         )
         bid_res = (
             supabase.table("bids")
-            .select("repair_request_id, bid_id")
+            .select("repair_request_id, bid_id, created_at")
             .eq("partner_id", partner_id)
             .execute()
         )
-        my_bids_by_request = {b["repair_request_id"]: b["bid_id"] for b in (bid_res.data or [])}
+        my_bids_by_request = {}
+        for b in bid_res.data or []:
+            rid = b["repair_request_id"]
+            my_bids_by_request[rid] = {
+                "bid_id": b["bid_id"],
+                "created_at": b.get("created_at"),
+            }
         market_data = []
         for r in req_res.data or []:
             request_id = r["repair_request_id"]
-            my_bid_id = my_bids_by_request.get(request_id)
+            my_bid_info = my_bids_by_request.get(request_id)
+            my_bid_id = my_bid_info["bid_id"] if my_bid_info else None
+            r["my_bid_submitted_at"] = (my_bid_info or {}).get("created_at")
             selected_ids = r.get("selected_bid_ids", []) or []
             stage_kr = _request_stage_kr(r.get("status", ""))
             if not my_bid_id:
@@ -930,7 +966,7 @@ async def get_market_detail(request_id: int, partner_id: str):
             supabase.table("repair_requests")
             .select(
                 "repair_request_id, status, region_summary, building_name, parking_type, "
-                "selected_items, selected_bid_ids, parsed_data, created_at"
+                "selected_items, selected_bid_ids, parsed_data, created_at, quote_deadline_at"
             )
             .eq("repair_request_id", request_id)
             .execute()
@@ -1103,6 +1139,211 @@ async def match_partners(data: MatchPartners):
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _user_email_for_id(user_id: str) -> Optional[str]:
+    try:
+        r = supabase.auth.admin.get_user_by_id(user_id)
+        return getattr(getattr(r, "user", None), "email", None)
+    except Exception:
+        return None
+
+
+@app.get("/api/site-announcement")
+async def public_site_announcement():
+    """첫 화면용: 배포 중인 단일 팝업 문구."""
+    try:
+        res = (
+            supabase.table("site_announcements")
+            .select("id, title, message, updated_at")
+            .eq("is_active", True)
+            .order("updated_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return {"status": "success", "data": None}
+    rows = res.data or []
+    return {"status": "success", "data": rows[0] if rows else None}
+
+
+@app.get("/api/inquiries")
+async def list_inquiries(authorization: Optional[str] = Header(default=None)):
+    res = (
+        supabase.table("inquiries")
+        .select("id, title, created_at, author_id")
+        .order("created_at", desc=True)
+        .limit(100)
+        .execute()
+    )
+    mine: Optional[str] = None
+    if authorization:
+        try:
+            mine = _require_authenticated_user(authorization)["id"]
+        except HTTPException:
+            mine = None
+    out = []
+    for r in res.data or []:
+        out.append(
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "created_at": r["created_at"],
+                "is_mine": bool(mine and r.get("author_id") == mine),
+            }
+        )
+    return {"status": "success", "data": out}
+
+
+@app.get("/api/inquiries/{inquiry_id}")
+async def get_inquiry_detail(inquiry_id: int, authorization: Optional[str] = Header(default=None)):
+    res = supabase.table("inquiries").select("*").eq("id", inquiry_id).limit(1).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
+    row = res.data[0]
+    mine: Optional[str] = None
+    if authorization:
+        try:
+            mine = _require_authenticated_user(authorization)["id"]
+        except HTTPException:
+            mine = None
+    is_mine = bool(mine and row.get("author_id") == mine)
+    rep = (
+        supabase.table("inquiry_replies")
+        .select("id, body, created_at, author_id")
+        .eq("inquiry_id", inquiry_id)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    replies_out = []
+    for r in rep.data or []:
+        em = _user_email_for_id(r.get("author_id", "")) or ""
+        replies_out.append(
+            {
+                "id": r["id"],
+                "body": r["body"],
+                "created_at": r["created_at"],
+                "is_admin": bool(ADMIN_EMAIL and em.lower() == ADMIN_EMAIL),
+            }
+        )
+    return {
+        "status": "success",
+        "data": {
+            "id": row["id"],
+            "title": row["title"],
+            "body": row["body"],
+            "created_at": row["created_at"],
+            "is_mine": is_mine,
+            "replies": replies_out,
+        },
+    }
+
+
+@app.post("/api/inquiries")
+async def create_inquiry(
+    body: InquiryCreate,
+    authorization: Optional[str] = Header(default=None),
+):
+    user = _require_authenticated_user(authorization)
+    _rate_limit("inquiry_create", user["id"])
+    if not body.title.strip() or not body.body.strip():
+        raise HTTPException(status_code=400, detail="제목과 내용을 입력해주세요.")
+    ins = (
+        supabase.table("inquiries")
+        .insert(
+            {
+                "author_id": user["id"],
+                "title": body.title.strip(),
+                "body": body.body.strip(),
+            }
+        )
+        .execute()
+    )
+    new_id = ins.data[0]["id"] if ins.data else None
+    return {"status": "success", "data": {"id": new_id}}
+
+
+@app.post("/api/inquiries/{inquiry_id}/reply")
+async def create_inquiry_reply(
+    inquiry_id: int,
+    body: InquiryReplyCreate,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    if not body.body.strip():
+        raise HTTPException(status_code=400, detail="답변 내용을 입력해주세요.")
+    chk = supabase.table("inquiries").select("id").eq("id", inquiry_id).limit(1).execute()
+    if not chk.data:
+        raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
+    supabase.table("inquiry_replies").insert(
+        {
+            "inquiry_id": inquiry_id,
+            "author_id": admin["id"],
+            "body": body.body.strip(),
+        }
+    ).execute()
+    _log_admin_action("inquiry_reply", admin["email"], {"inquiry_id": inquiry_id})
+    return {"status": "success"}
+
+
+@app.get("/api/admin/site-announcements")
+async def admin_list_site_announcements(authorization: Optional[str] = Header(default=None)):
+    _require_admin(authorization)
+    res = (
+        supabase.table("site_announcements")
+        .select("id, title, message, is_active, created_at, updated_at")
+        .order("id", desc=True)
+        .limit(40)
+        .execute()
+    )
+    return {"status": "success", "data": res.data or []}
+
+
+@app.post("/api/admin/site-announcements/deploy")
+async def admin_deploy_site_announcement(
+    body: SiteAnnouncementDeploy,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    msg = body.message.strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="팝업 내용을 입력해주세요.")
+    active_rows = (
+        supabase.table("site_announcements")
+        .select("id")
+        .eq("is_active", True)
+        .execute()
+        .data
+        or []
+    )
+    for r in active_rows:
+        supabase.table("site_announcements").update({"is_active": False}).eq("id", r["id"]).execute()
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    ins = (
+        supabase.table("site_announcements")
+        .insert(
+            {
+                "title": (body.title or "").strip() or None,
+                "message": msg,
+                "is_active": True,
+                "updated_at": now_iso,
+            }
+        )
+        .execute()
+    )
+    _log_admin_action("site_announcement_deploy", admin["email"], {"id": ins.data[0]["id"] if ins.data else None})
+    return {"status": "success", "data": ins.data[0] if ins.data else None}
+
+
+@app.post("/api/admin/site-announcements/{announcement_id}/deactivate")
+async def admin_deactivate_site_announcement(
+    announcement_id: int,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    supabase.table("site_announcements").update({"is_active": False}).eq("id", announcement_id).execute()
+    _log_admin_action("site_announcement_off", admin["email"], {"id": announcement_id})
+    return {"status": "success"}
 
 
 @app.get("/api/admin/overview")
