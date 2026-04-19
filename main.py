@@ -1,8 +1,10 @@
+import functools
 import json
 import logging
 import smtplib
 import os
 import re
+from collections import defaultdict
 import tempfile
 import uuid
 from datetime import datetime, timedelta
@@ -69,6 +71,7 @@ RATE_LIMITS = {
     "submit_bid": {"limit": 20, "window_sec": 60},
     "match_partners": {"limit": 10, "window_sec": 60},
     "inquiry_create": {"limit": 15, "window_sec": 120},
+    "inquiry_followup": {"limit": 20, "window_sec": 120},
 }
 _rate_counters: dict[str, List[datetime]] = {}
 
@@ -173,6 +176,22 @@ class InquiryReplyCreate(BaseModel):
 class SiteAnnouncementDeploy(BaseModel):
     title: Optional[str] = None
     message: str
+
+
+class InquiryFollowupCreate(BaseModel):
+    body: str
+
+
+class InquiryReplyPatch(BaseModel):
+    body: str
+
+
+class AdminPasswordUpdate(BaseModel):
+    new_password: str
+
+
+class AdminDeleteUserBody(BaseModel):
+    confirm_email: str
 
 
 class MyProfileUpdate(BaseModel):
@@ -1149,6 +1168,43 @@ def _user_email_for_id(user_id: str) -> Optional[str]:
         return None
 
 
+@functools.lru_cache(maxsize=512)
+def _cached_auth_email_lower(user_id: str) -> str:
+    return (_user_email_for_id(user_id) or "").lower()
+
+
+def _reply_row_is_admin_reply(row: dict) -> bool:
+    if row.get("is_staff"):
+        return True
+    if not ADMIN_EMAIL:
+        return False
+    return _cached_auth_email_lower(str(row.get("author_id") or "")) == ADMIN_EMAIL
+
+
+def _admin_reply_counts_by_inquiry(inquiry_ids: List[int]) -> dict[int, int]:
+    if not inquiry_ids:
+        return {}
+    try:
+        reps = (
+            supabase.table("inquiry_replies")
+            .select("inquiry_id, author_id, is_staff")
+            .in_("inquiry_id", inquiry_ids)
+            .execute()
+        )
+    except Exception:
+        reps = (
+            supabase.table("inquiry_replies")
+            .select("inquiry_id, author_id")
+            .in_("inquiry_id", inquiry_ids)
+            .execute()
+        )
+    counts: defaultdict[int, int] = defaultdict(int)
+    for row in reps.data or []:
+        if _reply_row_is_admin_reply(row):
+            counts[int(row["inquiry_id"])] += 1
+    return dict(counts)
+
+
 @app.get("/api/site-announcement")
 async def public_site_announcement():
     """첫 화면용: 배포 중인 단일 팝업 문구."""
@@ -1182,14 +1238,22 @@ async def list_inquiries(authorization: Optional[str] = Header(default=None)):
             mine = _require_authenticated_user(authorization)["id"]
         except HTTPException:
             mine = None
+    rows = res.data or []
+    iids = [int(r["id"]) for r in rows]
+    counts = _admin_reply_counts_by_inquiry(iids)
     out = []
-    for r in res.data or []:
+    for r in rows:
+        iid = int(r["id"])
+        n_admin = counts.get(iid, 0)
+        status_kr = "답변완료" if n_admin > 0 else "답변전"
         out.append(
             {
-                "id": r["id"],
+                "id": iid,
                 "title": r["title"],
                 "created_at": r["created_at"],
                 "is_mine": bool(mine and r.get("author_id") == mine),
+                "reply_status": "answered" if n_admin > 0 else "pending",
+                "reply_status_kr": status_kr,
             }
         )
     return {"status": "success", "data": out}
@@ -1202,30 +1266,98 @@ async def get_inquiry_detail(inquiry_id: int, authorization: Optional[str] = Hea
         raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
     row = res.data[0]
     mine: Optional[str] = None
+    is_admin_session = False
     if authorization:
         try:
-            mine = _require_authenticated_user(authorization)["id"]
+            u = _require_authenticated_user(authorization)
+            mine = u["id"]
         except HTTPException:
             mine = None
+        try:
+            tok = _extract_bearer(authorization)
+            ur = supabase.auth.get_user(tok)
+            uu = getattr(ur, "user", None)
+            if uu and uu.email and ADMIN_EMAIL and str(uu.email).lower() == ADMIN_EMAIL:
+                is_admin_session = True
+        except Exception:
+            is_admin_session = False
     is_mine = bool(mine and row.get("author_id") == mine)
-    rep = (
-        supabase.table("inquiry_replies")
-        .select("id, body, created_at, author_id")
-        .eq("inquiry_id", inquiry_id)
-        .order("created_at", desc=False)
-        .execute()
-    )
+    try:
+        rep = (
+            supabase.table("inquiry_replies")
+            .select("id, body, created_at, author_id, is_staff, updated_at")
+            .eq("inquiry_id", inquiry_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+    except Exception:
+        rep = (
+            supabase.table("inquiry_replies")
+            .select("id, body, created_at, author_id")
+            .eq("inquiry_id", inquiry_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
     replies_out = []
     for r in rep.data or []:
-        em = _user_email_for_id(r.get("author_id", "")) or ""
         replies_out.append(
             {
                 "id": r["id"],
                 "body": r["body"],
                 "created_at": r["created_at"],
-                "is_admin": bool(ADMIN_EMAIL and em.lower() == ADMIN_EMAIL),
+                "updated_at": r.get("updated_at"),
+                "is_admin": _reply_row_is_admin_reply(r),
             }
         )
+    followups_out: List[dict] = []
+    try:
+        fup = (
+            supabase.table("inquiry_followups")
+            .select("id, body, created_at, author_id")
+            .eq("inquiry_id", inquiry_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        for f in fup.data or []:
+            followups_out.append(
+                {
+                    "id": f["id"],
+                    "body": f["body"],
+                    "created_at": f["created_at"],
+                    "author_id": f.get("author_id"),
+                }
+            )
+    except Exception:
+        followups_out = []
+
+    timeline: List[dict] = []
+    for r in replies_out:
+        timeline.append(
+            {
+                "kind": "admin_reply",
+                "id": r["id"],
+                "body": r["body"],
+                "created_at": r["created_at"],
+                "updated_at": r.get("updated_at"),
+                "is_admin": r["is_admin"],
+            }
+        )
+    for f in followups_out:
+        timeline.append(
+            {
+                "kind": "user_followup",
+                "id": f["id"],
+                "body": f["body"],
+                "created_at": f["created_at"],
+                "is_admin": False,
+            }
+        )
+    timeline.sort(key=lambda x: str(x.get("created_at") or ""))
+
+    n_admin = sum(1 for r in replies_out if r["is_admin"])
+    reply_status = "answered" if n_admin > 0 else "pending"
+    can_followup = bool(is_mine and reply_status == "answered")
+
     return {
         "status": "success",
         "data": {
@@ -1233,8 +1365,15 @@ async def get_inquiry_detail(inquiry_id: int, authorization: Optional[str] = Hea
             "title": row["title"],
             "body": row["body"],
             "created_at": row["created_at"],
+            "author_id": row.get("author_id"),
             "is_mine": is_mine,
+            "is_admin_session": is_admin_session,
             "replies": replies_out,
+            "followups": followups_out,
+            "timeline": timeline,
+            "reply_status": reply_status,
+            "reply_status_kr": "답변완료" if reply_status == "answered" else "답변전",
+            "can_followup": can_followup,
         },
     }
 
@@ -1275,14 +1414,234 @@ async def create_inquiry_reply(
     chk = supabase.table("inquiries").select("id").eq("id", inquiry_id).limit(1).execute()
     if not chk.data:
         raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
-    supabase.table("inquiry_replies").insert(
-        {
-            "inquiry_id": inquiry_id,
-            "author_id": admin["id"],
-            "body": body.body.strip(),
-        }
-    ).execute()
+    row = {
+        "inquiry_id": inquiry_id,
+        "author_id": admin["id"],
+        "body": body.body.strip(),
+        "is_staff": True,
+    }
+    try:
+        supabase.table("inquiry_replies").insert(row).execute()
+    except Exception:
+        row.pop("is_staff", None)
+        supabase.table("inquiry_replies").insert(row).execute()
+    _cached_auth_email_lower.cache_clear()
     _log_admin_action("inquiry_reply", admin["email"], {"inquiry_id": inquiry_id})
+    return {"status": "success"}
+
+
+@app.patch("/api/admin/inquiry-replies/{reply_id}")
+async def admin_patch_inquiry_reply(
+    reply_id: int,
+    body: InquiryReplyPatch,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    if not body.body.strip():
+        raise HTTPException(status_code=400, detail="답변 내용을 입력해주세요.")
+    rep = supabase.table("inquiry_replies").select("*").eq("id", reply_id).limit(1).execute()
+    if not rep.data:
+        raise HTTPException(status_code=404, detail="답변을 찾을 수 없습니다.")
+    row = rep.data[0]
+    if not _reply_row_is_admin_reply(row):
+        raise HTTPException(status_code=403, detail="관리자 답변만 수정할 수 있습니다.")
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    try:
+        supabase.table("inquiry_replies").update(
+            {"body": body.body.strip(), "updated_at": now_iso}
+        ).eq("id", reply_id).execute()
+    except Exception:
+        supabase.table("inquiry_replies").update({"body": body.body.strip()}).eq("id", reply_id).execute()
+    _cached_auth_email_lower.cache_clear()
+    _log_admin_action("inquiry_reply_edit", admin["email"], {"reply_id": reply_id})
+    return {"status": "success"}
+
+
+@app.post("/api/inquiries/{inquiry_id}/followup")
+async def create_inquiry_followup(
+    inquiry_id: int,
+    body: InquiryFollowupCreate,
+    authorization: Optional[str] = Header(default=None),
+):
+    user = _require_authenticated_user(authorization)
+    _rate_limit("inquiry_followup", user["id"])
+    if not body.body.strip():
+        raise HTTPException(status_code=400, detail="내용을 입력해주세요.")
+    inv = supabase.table("inquiries").select("id, author_id").eq("id", inquiry_id).limit(1).execute()
+    if not inv.data:
+        raise HTTPException(status_code=404, detail="문의를 찾을 수 없습니다.")
+    if str(inv.data[0].get("author_id")) != str(user["id"]):
+        raise HTTPException(status_code=403, detail="본인 문의에만 추가 문의를 남길 수 있습니다.")
+    counts = _admin_reply_counts_by_inquiry([inquiry_id])
+    if counts.get(inquiry_id, 0) < 1:
+        raise HTTPException(status_code=400, detail="관리자 답변(답변 완료) 이후에만 추가 문의를 작성할 수 있습니다.")
+    try:
+        supabase.table("inquiry_followups").insert(
+            {
+                "inquiry_id": inquiry_id,
+                "author_id": user["id"],
+                "body": body.body.strip(),
+            }
+        ).execute()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"추가 문의 저장 실패: {str(e)}. DB에 inquiry_followups 테이블이 있는지 확인해주세요.",
+        )
+    return {"status": "success"}
+
+
+@app.get("/api/admin/inquiries")
+async def admin_list_inquiries(authorization: Optional[str] = Header(default=None)):
+    _require_admin(authorization)
+    res = (
+        supabase.table("inquiries")
+        .select("id, title, created_at, author_id")
+        .order("created_at", desc=True)
+        .limit(150)
+        .execute()
+    )
+    rows = res.data or []
+    iids = [int(r["id"]) for r in rows]
+    counts = _admin_reply_counts_by_inquiry(iids)
+    out = []
+    for r in rows:
+        iid = int(r["id"])
+        n = counts.get(iid, 0)
+        em = _cached_auth_email_lower(str(r.get("author_id") or "")) or None
+        out.append(
+            {
+                "id": iid,
+                "title": r["title"],
+                "created_at": r["created_at"],
+                "author_id": r.get("author_id"),
+                "author_email": em if em else None,
+                "reply_status_kr": "답변완료" if n > 0 else "답변전",
+            }
+        )
+    return {"status": "success", "data": out}
+
+
+def _unwrap_auth_user_list(resp) -> list:
+    if resp is None:
+        return []
+    if isinstance(resp, list):
+        return resp
+    u = getattr(resp, "users", None)
+    if u is not None:
+        return list(u)
+    if isinstance(resp, dict) and "users" in resp:
+        return list(resp["users"])
+    return []
+
+
+@app.get("/api/admin/auth-users")
+async def admin_list_auth_users(authorization: Optional[str] = Header(default=None)):
+    _require_admin(authorization)
+    all_users: list = []
+    page = 1
+    for _ in range(20):
+        try:
+            chunk = supabase.auth.admin.list_users(page=page, per_page=200)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Auth 사용자 목록 조회 실패: {str(e)}")
+        users = chunk if isinstance(chunk, list) else _unwrap_auth_user_list(chunk)
+        if not users:
+            break
+        all_users.extend(users)
+        if len(users) < 200:
+            break
+        page += 1
+
+    ids = []
+    for u in all_users:
+        if isinstance(u, dict):
+            uid = u.get("id")
+        elif hasattr(u, "model_dump"):
+            uid = u.model_dump().get("id")
+        else:
+            uid = getattr(u, "id", None)
+        if uid:
+            ids.append(str(uid))
+    profiles_by_id: dict = {}
+    if ids:
+        pres = supabase.table("profiles").select("id, role, is_active, name, phone_number, company_name, created_at").in_("id", ids).execute()
+        for p in pres.data or []:
+            profiles_by_id[str(p["id"])] = p
+
+    out = []
+    for u in all_users:
+        if isinstance(u, dict):
+            uid = str(u.get("id") or "")
+            email = u.get("email")
+        elif hasattr(u, "model_dump"):
+            ud = u.model_dump()
+            uid = str(ud.get("id") or "")
+            email = ud.get("email")
+        else:
+            uid = str(getattr(u, "id", "") or "")
+            email = getattr(u, "email", None)
+        prof = profiles_by_id.get(uid, {})
+        if "is_active" not in prof:
+            prof = {**prof, "is_active": True}
+        out.append(
+            {
+                "id": uid,
+                "email": email,
+                "name": prof.get("name"),
+                "phone_number": prof.get("phone_number"),
+                "company_name": prof.get("company_name"),
+                "role": prof.get("role"),
+                "is_active": prof.get("is_active", True),
+                "profile_created_at": prof.get("created_at"),
+            }
+        )
+    out.sort(key=lambda x: (x.get("email") or "").lower())
+    return {"status": "success", "data": out}
+
+
+@app.post("/api/admin/auth-users/{user_id}/password")
+async def admin_set_user_password(
+    user_id: str,
+    body: AdminPasswordUpdate,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    pw = body.new_password.strip()
+    if len(pw) < 6:
+        raise HTTPException(status_code=400, detail="비밀번호는 6자 이상이어야 합니다.")
+    try:
+        supabase.auth.admin.update_user_by_id(user_id, {"password": pw})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    _log_admin_action("admin_set_password", admin["email"], {"user_id": user_id})
+    return {"status": "success"}
+
+
+@app.post("/api/admin/auth-users/{user_id}/remove")
+async def admin_delete_auth_user(
+    user_id: str,
+    body: AdminDeleteUserBody,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    try:
+        ures = supabase.auth.admin.get_user_by_id(user_id)
+        target = getattr(ures, "user", None)
+        target_email = (getattr(target, "email", None) or "").lower()
+    except Exception:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+    if not target_email:
+        raise HTTPException(status_code=400, detail="대상 이메일을 확인할 수 없습니다.")
+    if target_email == ADMIN_EMAIL:
+        raise HTTPException(status_code=400, detail="관리자 계정은 삭제할 수 없습니다.")
+    if (body.confirm_email or "").strip().lower() != target_email:
+        raise HTTPException(status_code=400, detail="확인용 이메일이 대상 계정과 일치하지 않습니다.")
+    try:
+        supabase.auth.admin.delete_user(user_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    _log_admin_action("admin_delete_user", admin["email"], {"user_id": user_id, "email": target_email})
     return {"status": "success"}
 
 

@@ -20,7 +20,8 @@ export default function AdminPage() {
   const router = useRouter();
   const [token, setToken] = useState<string>("");
   const [overview, setOverview] = useState<AdminOverview | null>(null);
-  const [users, setUsers] = useState<any[]>([]);
+  const [authUsers, setAuthUsers] = useState<any[]>([]);
+  const [adminInquiries, setAdminInquiries] = useState<any[]>([]);
   const [trends, setTrends] = useState<Trends>({ daily: [], weekly: [], monthly: [] });
   const [loading, setLoading] = useState(true);
   const [popTitle, setPopTitle] = useState("");
@@ -32,26 +33,36 @@ export default function AdminPage() {
   const authHeader = (t: string) => ({ Authorization: `Bearer ${t}`, "Content-Type": "application/json" });
 
   const fetchAll = async (t: string) => {
-    const [oRes, uRes] = await Promise.all([
+    const [oRes, aRes] = await Promise.all([
       fetch(`${baseUrl}/api/admin/overview`, { headers: authHeader(t) }),
-      fetch(`${baseUrl}/api/admin/users`, { headers: authHeader(t) }),
+      fetch(`${baseUrl}/api/admin/auth-users`, { headers: authHeader(t) }),
     ]);
     const tRes = await fetch(`${baseUrl}/api/admin/stats/trends`, { headers: authHeader(t) });
     const pRes = await fetch(`${baseUrl}/api/admin/site-announcements`, { headers: authHeader(t) });
-    if (oRes.status === 401 || oRes.status === 403) {
+    const iRes = await fetch(`${baseUrl}/api/admin/inquiries`, { headers: authHeader(t) });
+    if (
+      oRes.status === 401 ||
+      oRes.status === 403 ||
+      aRes.status === 401 ||
+      aRes.status === 403
+    ) {
       alert("관리자 권한이 없습니다.");
       router.replace("/");
       return;
     }
     const oJson = await oRes.json();
-    const uJson = await uRes.json();
+    const aJson = await aRes.json();
     const tJson = await tRes.json();
     if (pRes.ok) {
       const pJson = await pRes.json();
       setPopAnnouncements(pJson.data || []);
     }
+    if (iRes.ok) {
+      const iJson = await iRes.json();
+      setAdminInquiries(iJson.data || []);
+    }
     setOverview(oJson.data);
-    setUsers(uJson.data || []);
+    setAuthUsers(aJson.data || []);
     setTrends(tJson.data || { daily: [], weekly: [], monthly: [] });
   };
 
@@ -124,6 +135,42 @@ export default function AdminPage() {
     });
     const json = await res.json();
     if (!res.ok) return alert(json.detail || "비활성화 실패");
+    await fetchAll(token);
+  };
+
+  const setUserPassword = async (userId: string) => {
+    const pw = window.prompt("새 비밀번호를 입력하세요 (6자 이상).");
+    if (!pw || pw.length < 6) {
+      if (pw !== null) alert("6자 이상이어야 합니다.");
+      return;
+    }
+    const res = await fetch(`${baseUrl}/api/admin/auth-users/${userId}/password`, {
+      method: "POST",
+      headers: authHeader(token),
+      body: JSON.stringify({ new_password: pw }),
+    });
+    const json = await res.json();
+    if (!res.ok) return alert(json.detail || "비밀번호 변경 실패");
+    alert("비밀번호가 변경되었습니다.");
+    await fetchAll(token);
+  };
+
+  const removeAuthUser = async (userId: string, email: string | null | undefined) => {
+    const em = (email || "").trim().toLowerCase();
+    if (!em) return alert("이메일이 없는 계정은 이 경로로 삭제할 수 없습니다.");
+    const typed = window.prompt(`계정을 삭제하려면 아래 이메일을 정확히 입력하세요.\n\n${em}`);
+    if (!typed || typed.trim().toLowerCase() !== em) {
+      alert("이메일이 일치하지 않아 삭제를 취소합니다.");
+      return;
+    }
+    if (!window.confirm("정말 이 계정을 삭제할까요? 되돌릴 수 없습니다.")) return;
+    const res = await fetch(`${baseUrl}/api/admin/auth-users/${userId}/remove`, {
+      method: "POST",
+      headers: authHeader(token),
+      body: JSON.stringify({ confirm_email: typed.trim().toLowerCase() }),
+    });
+    const json = await res.json();
+    if (!res.ok) return alert(json.detail || "삭제 실패");
     await fetchAll(token);
   };
 
@@ -228,52 +275,127 @@ export default function AdminPage() {
         </div>
       </section>
 
-      <section className="bg-white border rounded-2xl p-5">
-        <h2 className="text-xl font-bold mb-4">회원 관리 (역할 변경)</h2>
-        <div className="space-y-3">
-          {users.map((u) => (
-            <div key={u.id} className="border rounded-xl p-3 flex items-center justify-between gap-3">
-              <div>
-                <p className="font-bold">{u.name || "이름 미입력"} ({u.role || "미설정"})</p>
-                <p className="text-xs text-slate-500">
-                  {u.company_name || "-"} / {u.phone_number || "-"} / {u.id}
-                </p>
-                <p className={`text-xs font-semibold mt-1 ${u.is_active ? "text-emerald-600" : "text-rose-600"}`}>
-                  {u.is_active ? "활성" : "비활성"}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => updateUserRole(u.id, "requester")}
-                  className="px-3 py-1 rounded-lg text-sm bg-blue-50 text-blue-700 border border-blue-200"
-                >
-                  의뢰인
-                </button>
-                <button
-                  onClick={() => updateUserRole(u.id, "contractor")}
-                  className="px-3 py-1 rounded-lg text-sm bg-green-50 text-green-700 border border-green-200"
-                >
-                  업체
-                </button>
-                {u.is_active ? (
-                  <button
-                    onClick={() => updateUserActive(u.id, false)}
-                    className="px-3 py-1 rounded-lg text-sm bg-rose-50 text-rose-700 border border-rose-200"
+      <section className="bg-white border rounded-2xl p-5 overflow-x-auto">
+        <h2 className="text-xl font-bold mb-4">고객 문의 (관리자)</h2>
+        <table className="w-full text-sm text-left border-collapse min-w-[640px]">
+          <thead>
+            <tr className="border-b bg-slate-50">
+              <th className="py-2 px-2">상태</th>
+              <th className="py-2 px-2">제목</th>
+              <th className="py-2 px-2">작성자 이메일</th>
+              <th className="py-2 px-2">일시</th>
+              <th className="py-2 px-2">보기</th>
+            </tr>
+          </thead>
+          <tbody>
+            {adminInquiries.length === 0 && (
+              <tr>
+                <td colSpan={5} className="py-4 text-slate-400">
+                  문의 없음
+                </td>
+              </tr>
+            )}
+            {adminInquiries.map((q) => (
+              <tr key={q.id} className="border-b border-slate-100">
+                <td className="py-2 px-2 font-semibold">{q.reply_status_kr}</td>
+                <td className="py-2 px-2 max-w-[200px] truncate">{q.title}</td>
+                <td className="py-2 px-2 text-xs">{q.author_email || "-"}</td>
+                <td className="py-2 px-2 text-xs text-slate-500">
+                  {q.created_at ? new Date(q.created_at).toLocaleString("ko-KR") : ""}
+                </td>
+                <td className="py-2 px-2">
+                  <a href={`/inquiry/${q.id}`} className="text-indigo-600 font-semibold hover:underline">
+                    열기
+                  </a>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="bg-white border rounded-2xl p-5 overflow-x-auto">
+        <h2 className="text-xl font-bold mb-4">회원 관리 (Auth 연동)</h2>
+        <p className="text-sm text-slate-500 mb-4">
+          이메일·이름·고유 ID(UUID)·역할을 확인하고, 역할 변경·로그인 비밀번호 재설정·계정 삭제를 수행할 수 있습니다. 삭제 시 확인용으로 해당 사용자 이메일을 정확히 입력해야 합니다.
+        </p>
+        <table className="w-full text-sm text-left border-collapse min-w-[1040px]">
+          <thead>
+            <tr className="border-b bg-slate-50">
+              <th className="py-2 px-2">이메일</th>
+              <th className="py-2 px-2">이름</th>
+              <th className="py-2 px-2">고유코드 (id)</th>
+              <th className="py-2 px-2">역할</th>
+              <th className="py-2 px-2">전화</th>
+              <th className="py-2 px-2">회사명</th>
+              <th className="py-2 px-2">활성</th>
+              <th className="py-2 px-2">액션</th>
+            </tr>
+          </thead>
+          <tbody>
+            {authUsers.map((u) => (
+              <tr key={u.id} className="border-b border-slate-100 align-top">
+                <td className="py-2 px-2 break-all max-w-[180px]">{u.email || "-"}</td>
+                <td className="py-2 px-2">{u.name || "-"}</td>
+                <td className="py-2 px-2 text-xs font-mono break-all max-w-[220px]">{u.id}</td>
+                <td className="py-2 px-2">
+                  <select
+                    className="border rounded px-1 py-1 text-xs"
+                    value={u.role || "requester"}
+                    onChange={(e) =>
+                      updateUserRole(u.id, e.target.value as "requester" | "contractor")
+                    }
                   >
-                    비활성
-                  </button>
-                ) : (
+                    <option value="requester">의뢰인</option>
+                    <option value="contractor">수리업체</option>
+                  </select>
+                </td>
+                <td className="py-2 px-2 text-xs">{u.phone_number || "-"}</td>
+                <td className="py-2 px-2 text-xs max-w-[120px] truncate">{u.company_name || "-"}</td>
+                <td className="py-2 px-2">
+                  <span className={u.is_active ? "text-emerald-600 font-semibold" : "text-rose-600 font-semibold"}>
+                    {u.is_active ? "활성" : "비활성"}
+                  </span>
+                  <div className="mt-1">
+                    {u.is_active ? (
+                      <button
+                        type="button"
+                        onClick={() => updateUserActive(u.id, false)}
+                        className="text-xs text-rose-600 underline"
+                      >
+                        비활성
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => updateUserActive(u.id, true)}
+                        className="text-xs text-emerald-600 underline"
+                      >
+                        재활성
+                      </button>
+                    )}
+                  </div>
+                </td>
+                <td className="py-2 px-2 space-y-1">
                   <button
-                    onClick={() => updateUserActive(u.id, true)}
-                    className="px-3 py-1 rounded-lg text-sm bg-emerald-50 text-emerald-700 border border-emerald-200"
+                    type="button"
+                    onClick={() => setUserPassword(u.id)}
+                    className="block w-full px-2 py-1 rounded border border-slate-300 text-xs hover:bg-slate-50"
                   >
-                    재활성
+                    비밀번호 변경
                   </button>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
+                  <button
+                    type="button"
+                    onClick={() => removeAuthUser(u.id, u.email)}
+                    className="block w-full px-2 py-1 rounded border border-rose-200 text-xs text-rose-700 hover:bg-rose-50"
+                  >
+                    계정 삭제
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </section>
     </div>
   );

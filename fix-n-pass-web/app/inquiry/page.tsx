@@ -4,7 +4,13 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 
-type Row = { id: number; title: string; created_at: string; is_mine: boolean };
+type Row = {
+  id: number;
+  title: string;
+  created_at: string;
+  is_mine: boolean;
+  reply_status_kr?: string;
+};
 
 export default function InquiryListPage() {
   const [rows, setRows] = useState<Row[]>([]);
@@ -51,11 +57,24 @@ export default function InquiryListPage() {
               href={`/inquiry/${r.id}`}
               className="block bg-white border border-slate-200 rounded-xl p-4 hover:border-blue-300 transition-colors"
             >
-              <div className="flex justify-between gap-2">
+              <div className="flex justify-between gap-2 flex-wrap items-center">
                 <span className="font-semibold text-slate-900">{r.title}</span>
-                {r.is_mine && (
-                  <span className="text-xs font-bold text-blue-600 shrink-0">내 글</span>
-                )}
+                <div className="flex items-center gap-2 shrink-0">
+                  {r.is_mine && r.reply_status_kr && (
+                    <span
+                      className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                        r.reply_status_kr === "답변완료"
+                          ? "bg-emerald-100 text-emerald-800"
+                          : "bg-amber-100 text-amber-800"
+                      }`}
+                    >
+                      내 문의 · {r.reply_status_kr}
+                    </span>
+                  )}
+                  {r.is_mine && (
+                    <span className="text-xs font-bold text-blue-600">내 글</span>
+                  )}
+                </div>
               </div>
               <p className="text-xs text-slate-400 mt-2">
                 {r.created_at ? new Date(r.created_at).toLocaleString("ko-KR") : ""}

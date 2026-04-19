@@ -30,13 +30,17 @@ export default function IntroPage() {
           .select("role")
           .eq("id", currentUser.id)
           .single();
-        setRole(profile?.role || null);
+        const r = profile?.role || null;
+        setRole(r);
+        if (r === "contractor") {
+          router.replace("/contractor/market");
+        }
       } else {
         setRole(null);
       }
     };
     getUser();
-  }, []);
+  }, [router]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) setFile(acceptedFiles[0]);
