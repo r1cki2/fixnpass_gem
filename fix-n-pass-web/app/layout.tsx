@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import Link from "next/link";
-import AuthNav from "@/components/AuthNav"; // 방금 만든 인증 네비게이션 불러오기
+import AuthNav from "@/components/AuthNav";
+import SiteAnnouncementModal from "@/components/SiteAnnouncementModal";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -36,6 +37,9 @@ export default function RootLayout({
                 <Link href="/contractor/market" className="hover:text-blue-600 transition-colors">
                   수리 마켓 (업체용)
                 </Link>
+                <Link href="/inquiry" className="hover:text-blue-600 transition-colors">
+                  고객 문의
+                </Link>
               </nav>
             </div>
             
@@ -45,6 +49,7 @@ export default function RootLayout({
           </div>
         </header>
 
+        <SiteAnnouncementModal />
         <main className="max-w-5xl mx-auto p-4 min-h-screen">
           {children}
         </main>

@@ -5,6 +5,15 @@ import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
+const PHONE_PATTERN = /^010-\d{4}-\d{4}$/;
+
+function formatKoreanMobile(value: string) {
+  const digits = value.replace(/\D/g, "").slice(0, 11);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+}
+
 export default function SignupPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -24,12 +33,12 @@ export default function SignupPage() {
 
     setIsLoading(true);
     setMessage("");
-    const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
-    if (cleanPhone.length < 10) {
-      setMessage("전화번호 형식이 올바르지 않습니다.");
+    if (!PHONE_PATTERN.test(phoneNumber)) {
+      setMessage("휴대폰 번호는 010-0000-0000 형식(하이픈 포함)으로 입력해주세요.");
       setIsLoading(false);
       return;
     }
+    const cleanPhone = phoneNumber.replace(/-/g, "");
 
     const { error } = await supabase.auth.signUp({
       email,
@@ -78,12 +87,16 @@ export default function SignupPage() {
           <label className="block text-sm font-medium text-gray-700 mb-2">전화번호</label>
           <input
             type="tel"
+            inputMode="numeric"
+            autoComplete="tel"
             value={phoneNumber}
-            onChange={(e) => setPhoneNumber(e.target.value)}
+            onChange={(e) => setPhoneNumber(formatKoreanMobile(e.target.value))}
             className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="010-1234-5678"
+            maxLength={13}
             required
           />
+          <p className="text-xs text-gray-500 mt-1">010으로 시작하는 11자리 번호만 입력됩니다.</p>
         </div>
 
         <div>

@@ -23,6 +23,9 @@ export default function AdminPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [trends, setTrends] = useState<Trends>({ daily: [], weekly: [], monthly: [] });
   const [loading, setLoading] = useState(true);
+  const [popTitle, setPopTitle] = useState("");
+  const [popMessage, setPopMessage] = useState("");
+  const [popAnnouncements, setPopAnnouncements] = useState<any[]>([]);
 
   const baseUrl = useMemo(() => process.env.NEXT_PUBLIC_API_BASE_URL, []);
 
@@ -34,6 +37,7 @@ export default function AdminPage() {
       fetch(`${baseUrl}/api/admin/users`, { headers: authHeader(t) }),
     ]);
     const tRes = await fetch(`${baseUrl}/api/admin/stats/trends`, { headers: authHeader(t) });
+    const pRes = await fetch(`${baseUrl}/api/admin/site-announcements`, { headers: authHeader(t) });
     if (oRes.status === 401 || oRes.status === 403) {
       alert("관리자 권한이 없습니다.");
       router.replace("/");
@@ -42,6 +46,10 @@ export default function AdminPage() {
     const oJson = await oRes.json();
     const uJson = await uRes.json();
     const tJson = await tRes.json();
+    if (pRes.ok) {
+      const pJson = await pRes.json();
+      setPopAnnouncements(pJson.data || []);
+    }
     setOverview(oJson.data);
     setUsers(uJson.data || []);
     setTrends(tJson.data || { daily: [], weekly: [], monthly: [] });
@@ -95,6 +103,30 @@ export default function AdminPage() {
     await fetchAll(token);
   };
 
+  const deploySitePopup = async () => {
+    const res = await fetch(`${baseUrl}/api/admin/site-announcements/deploy`, {
+      method: "POST",
+      headers: authHeader(token),
+      body: JSON.stringify({ title: popTitle.trim() || undefined, message: popMessage }),
+    });
+    const json = await res.json();
+    if (!res.ok) return alert(json.detail || "배포 실패");
+    setPopMessage("");
+    setPopTitle("");
+    await fetchAll(token);
+    alert("첫 화면 팝업이 배포되었습니다.");
+  };
+
+  const deactivateAnnouncement = async (id: number) => {
+    const res = await fetch(`${baseUrl}/api/admin/site-announcements/${id}/deactivate`, {
+      method: "POST",
+      headers: authHeader(token),
+    });
+    const json = await res.json();
+    if (!res.ok) return alert(json.detail || "비활성화 실패");
+    await fetchAll(token);
+  };
+
   if (loading) return <div className="p-10">관리자 데이터를 불러오는 중...</div>;
   if (!overview) return <div className="p-10">데이터를 불러오지 못했습니다.</div>;
 
@@ -110,6 +142,56 @@ export default function AdminPage() {
         <Card title="총 견적" value={overview.counts.bids} />
         <Card title="총 사용자 프로필" value={overview.counts.profiles} />
       </div>
+
+      <section className="bg-white border rounded-2xl p-5 space-y-4">
+        <h2 className="text-xl font-bold">첫 화면 팝업 (알림 배포)</h2>
+        <p className="text-sm text-slate-500">
+          배포 시 기존에 켜져 있던 팝업은 자동으로 끄고, 새 문구만 방문자 첫 화면에 표시됩니다. 사용자가 닫으면 해당 팝업 ID는 브라우저에 저장되어 다시 뜨지 않습니다.
+        </p>
+        <input
+          value={popTitle}
+          onChange={(e) => setPopTitle(e.target.value)}
+          placeholder="제목 (선택)"
+          className="w-full border rounded-lg px-3 py-2 text-sm"
+        />
+        <textarea
+          value={popMessage}
+          onChange={(e) => setPopMessage(e.target.value)}
+          placeholder="팝업 본문"
+          className="w-full border rounded-lg px-3 py-2 text-sm min-h-[100px]"
+        />
+        <button
+          type="button"
+          onClick={() => deploySitePopup()}
+          className="px-4 py-2 rounded-lg bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700"
+        >
+          배포하기
+        </button>
+        <div className="border-t pt-4">
+          <p className="text-sm font-semibold text-slate-700 mb-2">최근 배포 이력</p>
+          <ul className="space-y-2 text-sm">
+            {popAnnouncements.length === 0 && <li className="text-slate-400">이력 없음</li>}
+            {popAnnouncements.map((a) => (
+              <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 border rounded-lg p-2">
+                <span className="text-slate-600">
+                  #{a.id} {a.is_active ? <b className="text-emerald-600">ON</b> : <span className="text-slate-400">off</span>}{" "}
+                  {(a.message || "").slice(0, 48)}
+                  {(a.message || "").length > 48 ? "…" : ""}
+                </span>
+                {a.is_active ? (
+                  <button
+                    type="button"
+                    onClick={() => deactivateAnnouncement(a.id)}
+                    className="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50"
+                  >
+                    끄기
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
 
       <section className="grid md:grid-cols-3 gap-4">
         <TrendCard title="일간 트렌드(30일)" items={trends.daily} />

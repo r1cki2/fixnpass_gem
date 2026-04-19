@@ -141,7 +141,7 @@ export default function IntroPage() {
         throw new Error(errorData.detail || '업데이트 실패');
       }
       
-      alert('성공적으로 견적 요청이 완료되었습니다!');
+      alert('성공적으로 견적 요청이 완료되었습니다.\n\n견적 요청 마감 기한은 2주입니다.');
       router.push('/my-requests');
       
     } catch (error: any) {
@@ -248,10 +248,14 @@ export default function IntroPage() {
                 </div>
               )}
 
+              <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900 font-medium leading-relaxed">
+                견적 요청 마감 기한은 <span className="font-black">2주</span>입니다.
+              </div>
+
               <button 
                 onClick={handleFinalRequest}
                 disabled={selectedItems.length === 0 || isRequesting} 
-                className="w-full mt-6 bg-slate-900 text-white py-5 rounded-2xl font-black text-xl hover:bg-slate-800 disabled:bg-slate-100 disabled:text-slate-400 transition-all shadow-xl flex items-center justify-center gap-2"
+                className="w-full mt-4 bg-slate-900 text-white py-5 rounded-2xl font-black text-xl hover:bg-slate-800 disabled:bg-slate-100 disabled:text-slate-400 transition-all shadow-xl flex items-center justify-center gap-2"
               >
                 {isRequesting ? <><Loader2 className="w-6 h-6 animate-spin" /> 요청 전송 중...</> : <>{selectedItems.length}개 항목 최종 견적 요청하기 <ArrowRight className="w-6 h-6" /></>}
               </button>
