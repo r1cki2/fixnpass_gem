@@ -67,7 +67,8 @@ export default function SignupPage() {
     <div className="max-w-md mx-auto mt-20 p-6 bg-white rounded-xl shadow-md border border-gray-200">
       <h1 className="text-3xl font-bold text-center text-gray-800 mb-2">회원가입</h1>
       <p className="text-center text-sm text-gray-500 mb-8">
-        이름/연락처 입력 후 가입하고, 다음 화면에서 역할과 상세정보를 설정하세요.
+        이름/연락처 입력 후 가입하고, 다음 화면에서 역할과 상세정보를 설정하세요. 수리 업체로 진행하시면 같은
+        화면에서 소재지와 관심 지역(인접 구·시 포함)을 편하게 고를 수 있습니다.
       </p>
 
       <form onSubmit={handleSignUp} className="flex flex-col gap-5">

@@ -8,7 +8,8 @@ import {
   submitPendingQuoteRequest,
 } from "@/lib/pendingQuote";
 import AddressSearchInput from "@/components/AddressSearchInput";
-import { REGION_OPTIONS_BY_SIDO, SIDO_OPTIONS } from "@/lib/regions";
+import InterestRegionPicker from "@/components/InterestRegionPicker";
+import { getDefaultInterestRegions } from "@/lib/regionAdjacency";
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -20,8 +21,6 @@ export default function OnboardingPage() {
   const [region, setRegion] = useState("");
   const [serviceRegionsInput, setServiceRegionsInput] = useState("");
   const [serviceRegions, setServiceRegions] = useState<string[]>([]);
-  const [selectedSido, setSelectedSido] = useState<string>("서울특별시");
-  const [selectedRegion, setSelectedRegion] = useState<string>("");
   const [recommendedRegions, setRecommendedRegions] = useState<string[]>([]);
   const [requesterAddress, setRequesterAddress] = useState("");
   const [buildingRole, setBuildingRole] = useState<"owner" | "manager" | "">("");
@@ -44,6 +43,46 @@ export default function OnboardingPage() {
     fetchUser();
   }, [router]);
 
+  useEffect(() => {
+    if (role !== "contractor" || !region.trim()) return;
+    const id = window.setTimeout(() => {
+      setServiceRegions((prev) => {
+        if (prev.length > 0) return prev;
+        const def = getDefaultInterestRegions(region);
+        return def.length ? def : prev;
+      });
+    }, 450);
+    return () => window.clearTimeout(id);
+  }, [region, role]);
+
+  useEffect(() => {
+    if (role !== "contractor") return;
+    setServiceRegionsInput(serviceRegions.join(", "));
+  }, [serviceRegions, role]);
+
+  useEffect(() => {
+    if (role !== "contractor" || !region.trim()) {
+      setRecommendedRegions([]);
+      return;
+    }
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+    if (!baseUrl) return;
+    const id = window.setTimeout(() => {
+      (async () => {
+        try {
+          const rec = await fetch(
+            `${baseUrl}/api/regions/recommend?base_region=${encodeURIComponent(region)}`,
+          );
+          const json = await rec.json().catch(() => ({ data: [] }));
+          if (Array.isArray(json.data)) setRecommendedRegions(json.data);
+        } catch {
+          setRecommendedRegions([]);
+        }
+      })();
+    }, 500);
+    return () => window.clearTimeout(id);
+  }, [region, role]);
+
   const handleSubmit = async () => {
     if (!userId || !role) return;
     if (!phoneNumber.trim()) {
@@ -62,8 +101,8 @@ export default function OnboardingPage() {
       alert("업체명(필수)과 활동 지역은 필수입니다.");
       return;
     }
-    if (role === "contractor" && !serviceRegionsInput.trim()) {
-      alert("관심 지역은 필수입니다. (쉼표로 구분)");
+    if (role === "contractor" && serviceRegions.length === 0) {
+      alert("관심 지역(수리 가능 범위)을 한 곳 이상 선택해 주세요.");
       return;
     }
     setIsLoading(true);
@@ -112,10 +151,12 @@ export default function OnboardingPage() {
     if (role === "contractor") {
       clearPendingQuoteRequest();
       const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-      const serviceRegions = serviceRegionsInput
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const serviceRegionsPayload = serviceRegions.length
+        ? serviceRegions
+        : serviceRegionsInput
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
       const profileRes = await fetch(`${baseUrl}/api/me/profile`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -125,7 +166,7 @@ export default function OnboardingPage() {
           company_name: companyName.trim(),
           phone_number: phoneNumber.replace(/[^0-9]/g, ""),
           business_location: region.trim(),
-          service_regions: serviceRegions,
+          service_regions: serviceRegionsPayload,
         }),
       });
       if (!profileRes.ok) {
@@ -246,49 +287,22 @@ export default function OnboardingPage() {
               <label className="block text-sm font-semibold text-gray-700 mb-2">소재지</label>
               <AddressSearchInput
                 value={region}
-                onChange={async (v) => {
+                onChange={(v) => {
                   setRegion(v);
-                  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-                  const rec = await fetch(`${baseUrl}/api/regions/recommend?base_region=${encodeURIComponent(v)}`);
-                  const json = await rec.json().catch(() => ({ data: [] }));
-                  if (Array.isArray(json.data)) {
-                    setRecommendedRegions(json.data);
-                    if (serviceRegions.length === 0) {
-                      setServiceRegions(json.data);
-                      setServiceRegionsInput(json.data.join(", "));
-                    }
-                  }
                 }}
               />
             </div>
             <div>
               <label className="block text-sm font-semibold text-gray-700 mb-2">관심 지역(수리 가능 범위)</label>
-              <div className="grid md:grid-cols-3 gap-2">
-                <select className="border rounded-lg px-2 py-2 text-sm" value={selectedSido} onChange={(e) => {
-                  setSelectedSido(e.target.value);
-                  setSelectedRegion("");
-                }}>
-                  {SIDO_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-                <select className="border rounded-lg px-2 py-2 text-sm" value={selectedRegion} onChange={(e) => setSelectedRegion(e.target.value)}>
-                  <option value="">구/시 선택</option>
-                  {(REGION_OPTIONS_BY_SIDO[selectedSido] || []).map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
-                <button
-                  type="button"
-                  className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm"
-                  onClick={() => {
-                    if (!selectedRegion) return;
-                    if (serviceRegions.includes(selectedRegion)) return;
-                    const next = [...serviceRegions, selectedRegion];
-                    setServiceRegions(next);
-                    setServiceRegionsInput(next.join(", "));
-                  }}
-                >
-                  지역 추가
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2 mt-2">
+              <InterestRegionPicker
+                value={serviceRegions}
+                baseAddress={region}
+                onChange={(next) => {
+                  setServiceRegions(next);
+                  setServiceRegionsInput(next.join(", "));
+                }}
+              />
+              <div className="flex flex-wrap gap-2 mt-3">
                 {serviceRegions.map((r) => (
                   <button
                     key={r}
@@ -305,23 +319,25 @@ export default function OnboardingPage() {
                 ))}
               </div>
               {recommendedRegions.length > 0 && (
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {recommendedRegions.map((r) => (
-                    <button
-                      type="button"
-                      key={r}
-                      onClick={() => {
-                        const current = [...serviceRegions];
-                        if (current.includes(r)) return;
-                        const next = [...current, r];
-                        setServiceRegions(next);
-                        setServiceRegionsInput(next.join(", "));
-                      }}
-                      className="px-2 py-1 text-xs rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200"
-                    >
-                      + {r}
-                    </button>
-                  ))}
+                <div className="mt-3">
+                  <p className="text-xs text-slate-500 mb-1">의뢰 데이터 기반 추천(탭하여 추가)</p>
+                  <div className="flex flex-wrap gap-2">
+                    {recommendedRegions.map((r) => (
+                      <button
+                        type="button"
+                        key={r}
+                        onClick={() => {
+                          if (serviceRegions.includes(r)) return;
+                          const next = [...serviceRegions, r];
+                          setServiceRegions(next);
+                          setServiceRegionsInput(next.join(", "));
+                        }}
+                        className="px-2 py-1 text-xs rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200"
+                      >
+                        + {r}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

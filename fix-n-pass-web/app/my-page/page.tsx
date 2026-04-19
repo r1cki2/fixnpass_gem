@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import AddressSearchInput from "@/components/AddressSearchInput";
-import { REGION_OPTIONS_BY_SIDO, SIDO_OPTIONS } from "@/lib/regions";
+import InterestRegionPicker from "@/components/InterestRegionPicker";
+import { getDefaultInterestRegions } from "@/lib/regionAdjacency";
 
 export default function MyPage() {
   const [userId, setUserId] = useState<string | null>(null);
@@ -15,8 +16,6 @@ export default function MyPage() {
   const [requesterAddress, setRequesterAddress] = useState("");
   const [regionsInput, setRegionsInput] = useState("");
   const [serviceRegions, setServiceRegions] = useState<string[]>([]);
-  const [selectedSido, setSelectedSido] = useState<string>("서울특별시");
-  const [selectedRegion, setSelectedRegion] = useState<string>("");
   const [years, setYears] = useState("");
   const [employees, setEmployees] = useState("");
   const [intro, setIntro] = useState("");
@@ -43,8 +42,11 @@ export default function MyPage() {
         setLocation(pp.business_location || "");
         setRequesterAddress(user.user_metadata?.requester_address || "");
         const sr = Array.isArray(pp.service_regions) ? pp.service_regions : [];
-        setServiceRegions(sr);
-        setRegionsInput(sr.join(", "));
+        const loc = (pp.business_location || "").trim();
+        const nextSr =
+          sr.length === 0 && loc ? getDefaultInterestRegions(loc) : sr;
+        setServiceRegions(nextSr);
+        setRegionsInput(nextSr.join(", "));
         setYears(pp.years_experience ? String(pp.years_experience) : "");
         setEmployees(pp.employee_count ? String(pp.employee_count) : "");
         setIntro(pp.intro || "");
@@ -110,31 +112,15 @@ export default function MyPage() {
             </div>
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-2">관심 지역</label>
-              <div className="grid md:grid-cols-3 gap-2">
-                <select className="border rounded-lg px-2 py-2 text-sm" value={selectedSido} onChange={(e) => {
-                  setSelectedSido(e.target.value);
-                  setSelectedRegion("");
-                }}>
-                  {SIDO_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-                <select className="border rounded-lg px-2 py-2 text-sm" value={selectedRegion} onChange={(e) => setSelectedRegion(e.target.value)}>
-                  <option value="">구/시 선택</option>
-                  {(REGION_OPTIONS_BY_SIDO[selectedSido] || []).map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
-                <button
-                  type="button"
-                  className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm"
-                  onClick={() => {
-                    if (!selectedRegion || serviceRegions.includes(selectedRegion)) return;
-                    const next = [...serviceRegions, selectedRegion];
-                    setServiceRegions(next);
-                    setRegionsInput(next.join(", "));
-                  }}
-                >
-                  지역 추가
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2 mt-2">
+              <InterestRegionPicker
+                value={serviceRegions}
+                baseAddress={location}
+                onChange={(next) => {
+                  setServiceRegions(next);
+                  setRegionsInput(next.join(", "));
+                }}
+              />
+              <div className="flex flex-wrap gap-2 mt-3">
                 {serviceRegions.map((r) => (
                   <button
                     key={r}
