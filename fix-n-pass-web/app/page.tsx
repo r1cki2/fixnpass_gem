@@ -49,6 +49,22 @@ export default function IntroPage() {
       }
     };
     getUser();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const currentUser = session?.user || null;
+      setUser(currentUser);
+      if (!currentUser?.id) {
+        setRole(null);
+        return;
+      }
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", currentUser.id)
+        .single();
+      setRole(profile?.role || null);
+    });
+    return () => subscription.unsubscribe();
   }, [router]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -127,7 +143,9 @@ export default function IntroPage() {
       alert("데이터 식별 오류입니다. 새로고침 후 다시 시도해주세요.");
       return;
     }
-    if (!user?.id) {
+    const { data: { session } } = await supabase.auth.getSession();
+    const liveUser = session?.user || null;
+    if (!liveUser?.id) {
       savePendingQuoteRequest({
         repair_request_id: analysisResult.repair_request_id,
         selected_items: selectedItems,
@@ -149,7 +167,7 @@ export default function IntroPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           repair_request_id: analysisResult.repair_request_id,
-          requester_id: user.id,
+          requester_id: liveUser.id,
           selected_items: selectedItems,
           status: 'requested'
         })

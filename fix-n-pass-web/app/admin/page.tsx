@@ -24,6 +24,7 @@ export default function AdminPage() {
   const [adminInquiries, setAdminInquiries] = useState<any[]>([]);
   const [trends, setTrends] = useState<Trends>({ daily: [], weekly: [], monthly: [] });
   const [loading, setLoading] = useState(true);
+  const [requireContractorApproval, setRequireContractorApproval] = useState(true);
   const [popTitle, setPopTitle] = useState("");
   const [popMessage, setPopMessage] = useState("");
   const [popAnnouncements, setPopAnnouncements] = useState<any[]>([]);
@@ -33,9 +34,10 @@ export default function AdminPage() {
   const authHeader = (t: string) => ({ Authorization: `Bearer ${t}`, "Content-Type": "application/json" });
 
   const fetchAll = async (t: string) => {
-    const [oRes, aRes] = await Promise.all([
+    const [oRes, aRes, sRes] = await Promise.all([
       fetch(`${baseUrl}/api/admin/overview`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/auth-users`, { headers: authHeader(t) }),
+      fetch(`${baseUrl}/api/admin/settings/contractor-approval`, { headers: authHeader(t) }),
     ]);
     const tRes = await fetch(`${baseUrl}/api/admin/stats/trends`, { headers: authHeader(t) });
     const pRes = await fetch(`${baseUrl}/api/admin/site-announcements`, { headers: authHeader(t) });
@@ -53,6 +55,10 @@ export default function AdminPage() {
     const oJson = await oRes.json();
     const aJson = await aRes.json();
     const tJson = await tRes.json();
+    if (sRes.ok) {
+      const sJson = await sRes.json();
+      setRequireContractorApproval(Boolean(sJson.data?.require_approval));
+    }
     if (pRes.ok) {
       const pJson = await pRes.json();
       setPopAnnouncements(pJson.data || []);
@@ -112,6 +118,17 @@ export default function AdminPage() {
     const json = await res.json();
     if (!res.ok) return alert(json.detail || "계정 상태 변경 실패");
     await fetchAll(token);
+  };
+
+  const updateContractorApprovalSetting = async (next: boolean) => {
+    const res = await fetch(`${baseUrl}/api/admin/settings/contractor-approval`, {
+      method: "POST",
+      headers: authHeader(token),
+      body: JSON.stringify({ require_approval: next }),
+    });
+    const json = await res.json();
+    if (!res.ok) return alert(json.detail || "설정 저장 실패");
+    setRequireContractorApproval(next);
   };
 
   const deploySitePopup = async () => {
@@ -189,6 +206,20 @@ export default function AdminPage() {
         <Card title="총 견적" value={overview.counts.bids} />
         <Card title="총 사용자 프로필" value={overview.counts.profiles} />
       </div>
+
+      <section className="bg-white border rounded-2xl p-5 space-y-4">
+        <h2 className="text-xl font-bold">회원가입 승인 설정</h2>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-slate-600">수리 업체 관리자 승인 필요</span>
+          <button
+            type="button"
+            onClick={() => updateContractorApprovalSetting(!requireContractorApproval)}
+            className={`px-3 py-1 rounded-full text-xs font-bold ${requireContractorApproval ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600"}`}
+          >
+            {requireContractorApproval ? "ON" : "OFF"}
+          </button>
+        </div>
+      </section>
 
       <section className="bg-white border rounded-2xl p-5 space-y-4">
         <h2 className="text-xl font-bold">첫 화면 팝업 (알림 배포)</h2>
@@ -346,7 +377,7 @@ export default function AdminPage() {
                       updateUserRole(u.id, e.target.value as "requester" | "contractor")
                     }
                   >
-                    <option value="requester">의뢰인</option>
+                    <option value="requester">수리 의뢰인</option>
                     <option value="contractor">수리업체</option>
                   </select>
                 </td>
@@ -354,9 +385,18 @@ export default function AdminPage() {
                 <td className="py-2 px-2 text-xs max-w-[120px] truncate">{u.company_name || "-"}</td>
                 <td className="py-2 px-2">
                   <span className={u.is_active ? "text-emerald-600 font-semibold" : "text-rose-600 font-semibold"}>
-                    {u.is_active ? "활성" : "비활성"}
+                    {u.role === "contractor" && !u.is_active ? "승인대기/비활성" : u.is_active ? "활성" : "비활성"}
                   </span>
                   <div className="mt-1">
+                    {u.role === "contractor" && !u.is_active && (
+                      <button
+                        type="button"
+                        onClick={() => updateUserActive(u.id, true)}
+                        className="text-xs text-emerald-700 underline mr-2"
+                      >
+                        가입 승인
+                      </button>
+                    )}
                     {u.is_active ? (
                       <button
                         type="button"

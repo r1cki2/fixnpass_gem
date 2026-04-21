@@ -180,6 +180,10 @@ class SiteAnnouncementDeploy(BaseModel):
     message: str
 
 
+class ContractorApprovalSettingUpdate(BaseModel):
+    require_approval: bool
+
+
 class InquiryFollowupCreate(BaseModel):
     body: str
 
@@ -207,10 +211,38 @@ class MyProfileUpdate(BaseModel):
     years_experience: Optional[int] = None
     employee_count: Optional[int] = None
     intro: Optional[str] = None
+    trigger_signup_notice: Optional[bool] = False
 
 
 def _safe_list(v):
     return v if isinstance(v, list) else []
+
+
+def _is_contractor_approval_required() -> bool:
+    try:
+        row = (
+            supabase.table("app_settings")
+            .select("value_json")
+            .eq("key", "contractor_signup")
+            .limit(1)
+            .execute()
+        )
+        if not row.data:
+            return True
+        v = row.data[0].get("value_json") or {}
+        return bool(v.get("require_approval", True))
+    except Exception:
+        return True
+
+
+def _set_contractor_approval_required(value: bool):
+    supabase.table("app_settings").upsert(
+        {
+            "key": "contractor_signup",
+            "value_json": {"require_approval": bool(value)},
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+    ).execute()
 
 
 def _get_profile(user_id: str) -> Optional[dict]:
@@ -724,9 +756,22 @@ async def recommend_regions(base_region: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/signup-config")
+async def get_signup_config():
+    return {
+        "status": "success",
+        "data": {
+            "require_contractor_approval": _is_contractor_approval_required(),
+        },
+    }
+
+
 @app.post("/api/me/profile")
 async def update_my_profile(body: MyProfileUpdate):
     try:
+        before = _get_profile(body.user_id) or {}
+        contractor_signup_transition = before.get("role") != "contractor" and body.role == "contractor"
+        require_approval = _is_contractor_approval_required()
         base_update = {}
         if body.role in ["requester", "contractor"]:
             base_update["role"] = body.role
@@ -736,6 +781,8 @@ async def update_my_profile(body: MyProfileUpdate):
             base_update["phone_number"] = body.phone_number
         if body.company_name is not None:
             base_update["company_name"] = body.company_name
+        if contractor_signup_transition and require_approval:
+            base_update["is_active"] = False
         if base_update:
             supabase.table("profiles").update(base_update).eq("id", body.user_id).execute()
 
@@ -764,7 +811,35 @@ async def update_my_profile(body: MyProfileUpdate):
                         detail="partner_profiles 테이블이 없습니다. 마이그레이션 SQL을 먼저 적용해주세요.",
                     )
                 raise e
-        return {"status": "success"}
+        if (
+            effective_role == "contractor"
+            and body.trigger_signup_notice
+            and ADMIN_EMAIL
+            and MAIL_SMTP_HOST
+            and MAIL_SMTP_USER
+            and MAIL_SMTP_PASS
+        ):
+            profile_after = _get_profile(body.user_id) or {}
+            subject = "[Fix&Pass] 신규 수리업체 가입 신청"
+            body_text = (
+                "새 수리업체 가입 신청이 접수되었습니다.\n\n"
+                f"- 이름: {profile_after.get('name') or '-'}\n"
+                f"- 상호: {profile_after.get('company_name') or '-'}\n"
+                f"- 소재지: {body.business_location or '-'}\n"
+                f"- 전화번호: {profile_after.get('phone_number') or '-'}\n"
+                f"- 사용자 ID: {body.user_id}\n"
+                f"- 승인 필요 설정: {'ON' if require_approval else 'OFF'}\n"
+            )
+            try:
+                _send_mail(ADMIN_EMAIL, subject, body_text)
+            except Exception as e:
+                logging.warning("contractor signup notify failed: %s", str(e))
+        return {
+            "status": "success",
+            "data": {
+                "approval_required": (effective_role == "contractor" and require_approval),
+            },
+        }
     except HTTPException as e:
         raise e
     except Exception as e:
@@ -1658,6 +1733,30 @@ async def admin_list_site_announcements(authorization: Optional[str] = Header(de
         .execute()
     )
     return {"status": "success", "data": res.data or []}
+
+
+@app.get("/api/admin/settings/contractor-approval")
+async def admin_get_contractor_approval_setting(authorization: Optional[str] = Header(default=None)):
+    _require_admin(authorization)
+    return {
+        "status": "success",
+        "data": {"require_approval": _is_contractor_approval_required()},
+    }
+
+
+@app.post("/api/admin/settings/contractor-approval")
+async def admin_set_contractor_approval_setting(
+    body: ContractorApprovalSettingUpdate,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    _set_contractor_approval_required(body.require_approval)
+    _log_admin_action(
+        "contractor_approval_setting",
+        admin["email"],
+        {"require_approval": body.require_approval},
+    )
+    return {"status": "success"}
 
 
 @app.post("/api/admin/site-announcements/deploy")

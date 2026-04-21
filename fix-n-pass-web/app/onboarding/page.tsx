@@ -90,7 +90,7 @@ export default function OnboardingPage() {
       return;
     }
     if (role === "requester" && !buildingRole) {
-      alert("건물주/관리인 구분을 선택해주세요.");
+      alert("수리 의뢰인 구분(건물주/관리 대행)을 선택해주세요.");
       return;
     }
     if (role === "requester" && !requesterAddress.trim()) {
@@ -196,7 +196,7 @@ export default function OnboardingPage() {
     <div className="max-w-3xl mx-auto mt-20 p-6">
       <h1 className="text-3xl font-bold text-gray-800 mb-4">환영합니다!</h1>
       <p className="text-lg text-gray-600 mb-8">
-        역할과 기본 정보를 입력하면 온보딩이 완료됩니다.
+        역할과 기본 정보를 입력하면 회원 가입이 완료됩니다.(수리 업체는 관리자 승인 후 가입이 완료됩니다.)
       </p>
 
       <div className="grid md:grid-cols-2 gap-8 mb-8">
@@ -210,7 +210,7 @@ export default function OnboardingPage() {
         >
           <div className="text-5xl mb-4">🏢</div>
           <h2 className="text-2xl font-bold text-gray-800 mb-2 group-hover:text-blue-600">
-            건물주 / 관리인
+            수리 의뢰인(건물주, 관리 대행 등)
           </h2>
           <p className="text-gray-500 break-keep">
             기계식 주차장 검사서류를 분석하고 수리를 의뢰하고 싶습니다.
@@ -227,7 +227,7 @@ export default function OnboardingPage() {
         >
           <div className="text-5xl mb-4">🔧</div>
           <h2 className="text-2xl font-bold text-gray-800 mb-2 group-hover:text-green-600">
-            보수 / 수리 업체
+            수리 업체
           </h2>
           <p className="text-gray-500 break-keep">
             의뢰인들의 요청을 확인하고 견적을 내어 수리를 진행하고 싶습니다.
@@ -250,7 +250,7 @@ export default function OnboardingPage() {
         {role === "requester" && (
           <>
             <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">건물주/관리인 구분</label>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">수리 의뢰인 구분</label>
               <select
                 value={buildingRole}
                 onChange={(e) => setBuildingRole(e.target.value as "owner" | "manager" | "")}
@@ -258,7 +258,7 @@ export default function OnboardingPage() {
               >
                 <option value="">선택해주세요</option>
                 <option value="owner">건물주</option>
-                <option value="manager">관리인</option>
+                <option value="manager">관리 대행/관리인</option>
               </select>
             </div>
             <div>
@@ -279,7 +279,7 @@ export default function OnboardingPage() {
                 value={companyName}
                 onChange={(e) => setCompanyName(e.target.value)}
                 className="w-full px-4 py-3 border rounded-lg"
-                placeholder="예: OO기계식주차 보수"
+                placeholder="예: OO엔지니어링"
                 required
               />
             </div>

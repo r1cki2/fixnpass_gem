@@ -93,7 +93,12 @@ export default function MyPage() {
 
   return (
     <div className="max-w-3xl mx-auto p-6">
-      <h1 className="text-2xl font-black mb-6">마이페이지</h1>
+      <div className="mb-6 flex items-center gap-3">
+        <h1 className="text-2xl font-black">마이페이지</h1>
+        <span className="px-2 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">
+          역할: {role === "contractor" ? "수리 업체" : "수리 의뢰인(건물주, 관리 대행 등)"}
+        </span>
+      </div>
       <div className="bg-white border rounded-2xl p-6 space-y-4">
         <Field label="이름" value={name} setValue={setName} />
         <Field label="전화번호" value={phone} setValue={setPhone} />
