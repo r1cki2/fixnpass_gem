@@ -164,6 +164,16 @@ class AdminRequestMatchUpdate(BaseModel):
 
 class AdminUserActiveUpdate(BaseModel):
     is_active: bool
+    force_duplicate_ok: Optional[bool] = False
+
+
+class AdminUserBulkDeleteBody(BaseModel):
+    user_ids: List[str]
+
+
+class AdminBulkRequestStatusUpdate(BaseModel):
+    request_ids: List[int]
+    status: str
 
 
 class InquiryCreate(BaseModel):
@@ -205,17 +215,21 @@ class MyProfileUpdate(BaseModel):
     role: Optional[str] = None
     name: Optional[str] = None
     phone_number: Optional[str] = None
+    office_phone_number: Optional[str] = None
     company_name: Optional[str] = None
     business_location: Optional[str] = None
     service_regions: Optional[List[str]] = None
     years_experience: Optional[int] = None
     employee_count: Optional[int] = None
-    intro: Optional[str] = None
     trigger_signup_notice: Optional[bool] = False
 
 
 def _safe_list(v):
     return v if isinstance(v, list) else []
+
+
+def _normalize_phone(value: Optional[str]) -> str:
+    return re.sub(r"[^0-9]", "", value or "")
 
 
 def _is_contractor_approval_required() -> bool:
@@ -249,7 +263,7 @@ def _get_profile(user_id: str) -> Optional[dict]:
     try:
         profile_res = (
             supabase.table("profiles")
-            .select("role, is_active, name, phone_number, company_name")
+            .select("role, is_active, name, phone_number, office_phone_number, company_name")
             .eq("id", user_id)
             .limit(1)
             .execute()
@@ -258,7 +272,7 @@ def _get_profile(user_id: str) -> Optional[dict]:
         # Backward compatibility when is_active column is not created yet.
         profile_res = (
             supabase.table("profiles")
-            .select("role, name, phone_number, company_name")
+            .select("role, name, phone_number, office_phone_number, company_name")
             .eq("id", user_id)
             .limit(1)
             .execute()
@@ -624,7 +638,7 @@ async def get_partner_profile(partner_id: str):
     try:
         profile_res = (
             supabase.table("profiles")
-            .select("id, role, name, phone_number, company_name")
+            .select("id, role, name, phone_number, office_phone_number, company_name")
             .eq("id", partner_id)
             .limit(1)
             .execute()
@@ -649,12 +663,11 @@ async def get_partner_profile(partner_id: str):
             "service_regions": [],
             "years_experience": None,
             "employee_count": None,
-            "intro": None,
         }
         try:
             extra_res = (
                 supabase.table("partner_profiles")
-                .select("business_location, service_regions, years_experience, employee_count, intro")
+                .select("business_location, service_regions, years_experience, employee_count")
                 .eq("partner_id", partner_id)
                 .limit(1)
                 .execute()
@@ -670,6 +683,7 @@ async def get_partner_profile(partner_id: str):
                 "partner_id": partner_id,
                 "name": profile.get("name"),
                 "company_name": profile.get("company_name"),
+                "office_phone_number": profile.get("office_phone_number"),
                 "avg_rating": float(rating.get("avg_rating", 0)),
                 "review_count": int(rating.get("review_count", 0)),
                 **extra,
@@ -692,7 +706,7 @@ async def get_my_profile(user_id: str):
             try:
                 p = (
                     supabase.table("partner_profiles")
-                    .select("business_location, service_regions, years_experience, employee_count, intro")
+                    .select("business_location, service_regions, years_experience, employee_count")
                     .eq("partner_id", user_id)
                     .limit(1)
                     .execute()
@@ -769,6 +783,12 @@ async def get_signup_config():
 @app.post("/api/me/profile")
 async def update_my_profile(body: MyProfileUpdate):
     try:
+        if body.name is not None and body.name.strip():
+            if not re.fullmatch(r"[가-힣\s]+", body.name.strip()):
+                raise HTTPException(status_code=400, detail="이름은 한글만 입력 가능합니다.")
+        if body.company_name is not None and body.company_name.strip():
+            if not re.fullmatch(r"[가-힣A-Za-z0-9\s().,&\-]+", body.company_name.strip()):
+                raise HTTPException(status_code=400, detail="상호 형식이 올바르지 않습니다.")
         before = _get_profile(body.user_id) or {}
         contractor_signup_transition = before.get("role") != "contractor" and body.role == "contractor"
         require_approval = _is_contractor_approval_required()
@@ -778,7 +798,9 @@ async def update_my_profile(body: MyProfileUpdate):
         if body.name is not None:
             base_update["name"] = body.name
         if body.phone_number is not None:
-            base_update["phone_number"] = body.phone_number
+            base_update["phone_number"] = _normalize_phone(body.phone_number)
+        if body.office_phone_number is not None:
+            base_update["office_phone_number"] = _normalize_phone(body.office_phone_number)
         if body.company_name is not None:
             base_update["company_name"] = body.company_name
         if contractor_signup_transition and require_approval:
@@ -800,7 +822,6 @@ async def update_my_profile(body: MyProfileUpdate):
                 "service_regions": normalized_regions,
                 "years_experience": body.years_experience,
                 "employee_count": body.employee_count,
-                "intro": body.intro or "",
             }
             try:
                 supabase.table("partner_profiles").upsert(upsert_payload).execute()
@@ -844,6 +865,24 @@ async def update_my_profile(body: MyProfileUpdate):
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _has_active_duplicate_company(company_name: str, exclude_user_id: Optional[str] = None) -> bool:
+    nm = (company_name or "").strip()
+    if not nm:
+        return False
+    q = (
+        supabase.table("profiles")
+        .select("id")
+        .eq("role", "contractor")
+        .eq("is_active", True)
+        .eq("company_name", nm)
+        .limit(3)
+    )
+    if exclude_user_id:
+        q = q.neq("id", exclude_user_id)
+    res = q.execute()
+    return bool(res.data)
 
 
 @app.get("/api/my-requests")
@@ -1476,6 +1515,18 @@ async def create_inquiry(
         .execute()
     )
     new_id = ins.data[0]["id"] if ins.data else None
+    if ADMIN_EMAIL and MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS:
+        try:
+            subj = "[Fix&Pass] 신규 고객 문의 등록"
+            mail_body = (
+                "새 고객 문의가 등록되었습니다.\n\n"
+                f"- 문의 ID: {new_id}\n"
+                f"- 작성자: {user['email'] or '-'}\n"
+                f"- 제목: {body.title.strip()}\n"
+            )
+            _send_mail(ADMIN_EMAIL, subj, mail_body)
+        except Exception as e:
+            logging.warning("new inquiry admin mail failed: %s", str(e))
     return {"status": "success", "data": {"id": new_id}}
 
 
@@ -1642,7 +1693,12 @@ async def admin_list_auth_users(authorization: Optional[str] = Header(default=No
             ids.append(str(uid))
     profiles_by_id: dict = {}
     if ids:
-        pres = supabase.table("profiles").select("id, role, is_active, name, phone_number, company_name, created_at").in_("id", ids).execute()
+        pres = (
+            supabase.table("profiles")
+            .select("id, role, is_active, name, phone_number, office_phone_number, company_name, created_at")
+            .in_("id", ids)
+            .execute()
+        )
         for p in pres.data or []:
             profiles_by_id[str(p["id"])] = p
 
@@ -1667,6 +1723,7 @@ async def admin_list_auth_users(authorization: Optional[str] = Header(default=No
                 "email": email,
                 "name": prof.get("name"),
                 "phone_number": prof.get("phone_number"),
+                "office_phone_number": prof.get("office_phone_number"),
                 "company_name": prof.get("company_name"),
                 "role": prof.get("role"),
                 "is_active": prof.get("is_active", True),
@@ -1839,7 +1896,7 @@ async def admin_users(authorization: Optional[str] = Header(default=None)):
     try:
         users = (
             supabase.table("profiles")
-            .select("id, role, is_active, name, phone_number, company_name, created_at")
+            .select("id, role, is_active, name, phone_number, office_phone_number, company_name, created_at")
             .order("created_at", desc=True)
             .limit(200)
             .execute()
@@ -1847,7 +1904,7 @@ async def admin_users(authorization: Optional[str] = Header(default=None)):
     except Exception:
         users = (
             supabase.table("profiles")
-            .select("id, role, name, phone_number, company_name, created_at")
+            .select("id, role, name, phone_number, office_phone_number, company_name, created_at")
             .order("created_at", desc=True)
             .limit(200)
             .execute()
@@ -1880,6 +1937,22 @@ async def admin_update_user_active(
     authorization: Optional[str] = Header(default=None),
 ):
     admin = _require_admin(authorization)
+    if body.is_active:
+        prof = (
+            supabase.table("profiles")
+            .select("id, role, company_name")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+        p = prof.data[0] if prof.data else None
+        if p and p.get("role") == "contractor":
+            nm = (p.get("company_name") or "").strip()
+            if nm and _has_active_duplicate_company(nm, exclude_user_id=user_id) and not body.force_duplicate_ok:
+                raise HTTPException(
+                    status_code=409,
+                    detail="동일 상호의 활성 업체가 이미 있습니다. 중복 확인 후 승인하세요.",
+                )
     try:
         supabase.table("profiles").update({"is_active": body.is_active}).eq("id", user_id).execute()
     except Exception as e:
@@ -1894,6 +1967,57 @@ async def admin_update_user_active(
         raise e
     _log_admin_action("update_user_active", admin["email"], {"user_id": user_id, "is_active": body.is_active})
     return {"status": "success"}
+
+
+@app.post("/api/admin/auth-users/bulk-remove")
+async def admin_bulk_delete_auth_users(
+    body: AdminUserBulkDeleteBody,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    ids = list(dict.fromkeys([str(x).strip() for x in (body.user_ids or []) if str(x).strip()]))
+    if not ids:
+        raise HTTPException(status_code=400, detail="삭제할 user_ids가 비어 있습니다.")
+    removed = 0
+    failed = []
+    profiles = supabase.table("profiles").select("id, role, company_name").in_("id", ids).execute()
+    pmap = {str(p["id"]): p for p in (profiles.data or [])}
+    for uid in ids:
+        p = pmap.get(uid, {})
+        try:
+            ures = supabase.auth.admin.get_user_by_id(uid)
+            target_email = getattr(getattr(ures, "user", None), "email", None)
+            supabase.table("admin_user_deletion_archive").insert(
+                {
+                    "user_id": uid,
+                    "email": target_email,
+                    "role": p.get("role"),
+                    "company_name": p.get("company_name"),
+                    "requested_by": admin["email"],
+                }
+            ).execute()
+            supabase.auth.admin.delete_user(uid)
+            removed += 1
+        except Exception as e:
+            failed.append({"user_id": uid, "error": str(e)})
+    _log_admin_action("admin_bulk_delete_users", admin["email"], {"requested": len(ids), "removed": removed})
+    return {"status": "success", "data": {"requested": len(ids), "removed": removed, "failed": failed}}
+
+
+@app.post("/api/admin/requests/bulk-status")
+async def admin_bulk_update_request_status(
+    body: AdminBulkRequestStatusUpdate,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    ids = list(dict.fromkeys([int(x) for x in (body.request_ids or [])]))
+    if not ids:
+        raise HTTPException(status_code=400, detail="변경할 request_ids가 비어 있습니다.")
+    if body.status not in ["draft", "requested", "bidding", "matched", "repairing", "completed", "cancelled"]:
+        raise HTTPException(status_code=400, detail="지원하지 않는 status 입니다.")
+    supabase.table("repair_requests").update({"status": body.status}).in_("repair_request_id", ids).execute()
+    _log_admin_action("bulk_update_request_status", admin["email"], {"count": len(ids), "status": body.status})
+    return {"status": "success", "data": {"updated_count": len(ids)}}
 
 
 @app.post("/api/notifications/process")

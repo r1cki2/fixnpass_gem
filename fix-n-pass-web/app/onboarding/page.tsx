@@ -17,6 +17,7 @@ export default function OnboardingPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [role, setRole] = useState<"requester" | "contractor" | null>(null);
   const [phoneNumber, setPhoneNumber] = useState("");
+  const [officePhoneNumber, setOfficePhoneNumber] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [region, setRegion] = useState("");
   const [serviceRegionsInput, setServiceRegionsInput] = useState("");
@@ -35,6 +36,7 @@ export default function OnboardingPage() {
         setUserId(session.user.id);
         const md = session.user.user_metadata || {};
         setPhoneNumber(md.phone_number || "");
+        setOfficePhoneNumber(md.office_phone_number || "");
         setCompanyName(md.company_name || "");
         setRegion(md.region || "");
         setRequesterAddress(md.requester_address || "");
@@ -86,7 +88,7 @@ export default function OnboardingPage() {
   const handleSubmit = async () => {
     if (!userId || !role) return;
     if (!phoneNumber.trim()) {
-      alert("전화번호는 필수입니다.");
+      alert("휴대폰 번호는 필수입니다.");
       return;
     }
     if (role === "requester" && !buildingRole) {
@@ -114,6 +116,7 @@ export default function OnboardingPage() {
     const profilePayload: any = {
       role,
       phone_number: phoneNumber.replace(/[^0-9]/g, ""),
+      office_phone_number: officePhoneNumber.replace(/[^0-9]/g, ""),
     };
     if (displayName) {
       profilePayload.name = displayName;
@@ -139,6 +142,7 @@ export default function OnboardingPage() {
         requester_address: role === "requester" ? requesterAddress : null,
         region: role === "contractor" ? region.trim() : null,
         company_name: role === "contractor" ? companyName.trim() : null,
+        office_phone_number: officePhoneNumber.replace(/[^0-9]/g, "") || null,
         verification_status: "soft-verified-beta",
       },
     });
@@ -165,6 +169,7 @@ export default function OnboardingPage() {
           role: "contractor",
           company_name: companyName.trim(),
           phone_number: phoneNumber.replace(/[^0-9]/g, ""),
+          office_phone_number: officePhoneNumber.replace(/[^0-9]/g, ""),
           business_location: region.trim(),
           service_regions: serviceRegionsPayload,
         }),
@@ -180,9 +185,6 @@ export default function OnboardingPage() {
     if (role === "requester") {
       const pend = await submitPendingQuoteRequest(userId);
       if (pend.ok) {
-        alert(
-          "비회원으로 분석·선택하신 항목으로 견적 요청을 완료했습니다.\n\n견적 요청 마감 기한은 2주입니다."
-        );
         router.push("/my-requests");
         return;
       }
@@ -237,12 +239,22 @@ export default function OnboardingPage() {
 
       <div className="bg-white border border-gray-200 rounded-2xl p-6 space-y-4">
         <div>
-          <label className="block text-sm font-semibold text-gray-700 mb-2">전화번호</label>
+          <label className="block text-sm font-semibold text-gray-700 mb-2">휴대폰 번호</label>
           <input
             type="tel"
             value={phoneNumber}
             onChange={(e) => setPhoneNumber(e.target.value)}
             placeholder="010-1234-5678"
+            className="w-full px-4 py-3 border rounded-lg"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-semibold text-gray-700 mb-2">사무실 전화번호 (선택)</label>
+          <input
+            type="tel"
+            value={officePhoneNumber}
+            onChange={(e) => setOfficePhoneNumber(e.target.value)}
+            placeholder="예: 02-123-4567"
             className="w-full px-4 py-3 border rounded-lg"
           />
         </div>

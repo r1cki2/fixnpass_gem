@@ -38,9 +38,6 @@ export default function IntroPage() {
         } else if (r === "requester" && currentUser?.id) {
           const done = await submitPendingQuoteRequest(currentUser.id);
           if (done.ok) {
-            alert(
-              "이전에 비회원으로 분석·선택하신 항목으로 견적 요청을 완료했습니다.\n\n견적 요청 마감 기한은 2주입니다."
-            );
             router.replace("/my-requests");
           }
         }

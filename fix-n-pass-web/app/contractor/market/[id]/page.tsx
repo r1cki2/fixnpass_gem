@@ -12,6 +12,12 @@ export default function ContractorBidPage() {
 
   const [req, setReq] = useState<any>(null);
   const [amount, setAmount] = useState('');
+  const toDigits = (v: string) => v.replace(/[^0-9]/g, "");
+  const formatWon = (v: string) => {
+    const d = toDigits(v);
+    if (!d) return "";
+    return Number(d).toLocaleString("ko-KR");
+  };
   const [isSubmitting, setIsSubmitting] = useState(false);
   
   const [hasBid, setHasBid] = useState(false);
@@ -65,7 +71,7 @@ export default function ContractorBidPage() {
       return;
     }
     
-    if (!amount) return alert('견적 금액을 입력해주세요.');
+    if (!toDigits(amount)) return alert('견적 금액을 입력해주세요.');
     
     setIsSubmitting(true);
     try {
@@ -76,7 +82,7 @@ export default function ContractorBidPage() {
         body: JSON.stringify({
           repair_request_id: Number(requestId),
           partner_id: partnerId,
-          bid_amount: Number(amount)
+          bid_amount: Number(toDigits(amount))
         })
       });
 
@@ -177,11 +183,12 @@ export default function ContractorBidPage() {
               
               <div className="space-y-6">
                 <input 
-                  type="number" 
+                  type="text"
+                  inputMode="numeric"
                   value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
+                  onChange={(e) => setAmount(formatWon(e.target.value))}
                   disabled={!canEdit}
-                  placeholder="금액을 입력하세요"
+                  placeholder="금액을 입력하세요 (예: 1,200,000)"
                   className={`w-full border-none rounded-2xl p-5 text-white font-black text-3xl outline-none transition-all ${canEdit ? 'bg-blue-700 focus:ring-4 focus:ring-blue-400/50' : 'bg-slate-500 cursor-not-allowed'}`}
                 />
                 

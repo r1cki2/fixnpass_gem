@@ -11,6 +11,7 @@ export default function MyPage() {
   const [role, setRole] = useState<"requester" | "contractor" | null>(null);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [officePhone, setOfficePhone] = useState("");
   const [company, setCompany] = useState("");
   const [location, setLocation] = useState("");
   const [requesterAddress, setRequesterAddress] = useState("");
@@ -18,7 +19,6 @@ export default function MyPage() {
   const [serviceRegions, setServiceRegions] = useState<string[]>([]);
   const [years, setYears] = useState("");
   const [employees, setEmployees] = useState("");
-  const [intro, setIntro] = useState("");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -38,6 +38,7 @@ export default function MyPage() {
         setRole((p.role || null) as any);
         setName(p.name || "");
         setPhone(p.phone_number || "");
+        setOfficePhone(p.office_phone_number || "");
         setCompany(p.company_name || "");
         setLocation(pp.business_location || "");
         setRequesterAddress(user.user_metadata?.requester_address || "");
@@ -49,7 +50,6 @@ export default function MyPage() {
         setRegionsInput(nextSr.join(", "));
         setYears(pp.years_experience ? String(pp.years_experience) : "");
         setEmployees(pp.employee_count ? String(pp.employee_count) : "");
-        setIntro(pp.intro || "");
       }
       setLoading(false);
     };
@@ -63,6 +63,7 @@ export default function MyPage() {
       user_id: userId,
       name,
       phone_number: phone,
+      office_phone_number: officePhone,
       role,
       company_name: company,
     };
@@ -71,7 +72,6 @@ export default function MyPage() {
       payload.service_regions = regionsInput.split(",").map((s) => s.trim()).filter(Boolean);
       payload.years_experience = years ? Number(years) : null;
       payload.employee_count = employees ? Number(employees) : null;
-      payload.intro = intro;
     }
     const res = await fetch(`${baseUrl}/api/me/profile`, {
       method: "POST",
@@ -101,7 +101,8 @@ export default function MyPage() {
       </div>
       <div className="bg-white border rounded-2xl p-6 space-y-4">
         <Field label="이름" value={name} setValue={setName} />
-        <Field label="전화번호" value={phone} setValue={setPhone} />
+        <Field label="휴대폰 번호" value={phone} setValue={setPhone} />
+        <Field label="사무실 전화번호(선택)" value={officePhone} setValue={setOfficePhone} />
         {role === "requester" && (
           <div>
             <label className="block text-sm font-semibold text-slate-700 mb-2">건물 소재지</label>
@@ -144,14 +145,6 @@ export default function MyPage() {
             </div>
             <Field label="업력(년)" value={years} setValue={setYears} />
             <Field label="직원수" value={employees} setValue={setEmployees} />
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-2">업체 소개</label>
-              <textarea
-                value={intro}
-                onChange={(e) => setIntro(e.target.value)}
-                className="w-full border rounded-lg px-3 py-2 min-h-28"
-              />
-            </div>
           </>
         )}
         <button onClick={save} className="w-full bg-slate-900 text-white py-3 rounded-lg font-bold">

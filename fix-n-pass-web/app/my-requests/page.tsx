@@ -31,9 +31,7 @@ export default function MyRequestsPage() {
         }
         const pending = await submitPendingQuoteRequest(user.id);
         if (pending.ok) {
-          alert(
-            "이전에 비회원으로 분석·선택하신 항목으로 견적 요청을 완료했습니다.\n\n견적 요청 마감 기한은 2주입니다."
-          );
+          // 자동 완료 알림 팝업은 제거 (요청사항)
         }
         const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
         const res = await fetch(`${baseUrl}/api/my-requests?requester_id=${user.id}`);

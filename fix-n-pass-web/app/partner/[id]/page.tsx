@@ -46,12 +46,8 @@ export default function PartnerDetailPage() {
           />
           <InfoItem label="업력" value={data.years_experience ? `${data.years_experience}년` : "정보 미등록"} />
           <InfoItem label="직원수" value={data.employee_count ? `${data.employee_count}명` : "정보 미등록"} />
-        </div>
-        <div>
-          <p className="text-sm font-semibold text-slate-700 mb-2">업체 소개</p>
-          <div className="rounded-xl border bg-slate-50 p-4 text-sm text-slate-600">
-            {data.intro || "정보 미등록"}
-          </div>
+          <InfoItem label="휴대폰 번호" value={data.phone_number || "정보 미등록"} />
+          <InfoItem label="사무실 전화번호" value={data.office_phone_number || "정보 미등록"} />
         </div>
       </div>
     </div>

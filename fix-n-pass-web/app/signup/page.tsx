@@ -9,6 +9,8 @@ import InterestRegionPicker from "@/components/InterestRegionPicker";
 import { getDefaultInterestRegions } from "@/lib/regionAdjacency";
 
 const PHONE_PATTERN = /^010-\d{4}-\d{4}$/;
+const NAME_PATTERN = /^[가-힣\s]+$/;
+const COMPANY_PATTERN = /^[가-힣a-zA-Z0-9\s().,&-]+$/;
 
 function formatKoreanMobile(value: string) {
   const digits = value.replace(/\D/g, "").slice(0, 11);
@@ -25,6 +27,7 @@ export default function SignupPage() {
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [name, setName] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
+  const [officePhoneNumber, setOfficePhoneNumber] = useState("");
   const [requesterAddress, setRequesterAddress] = useState("");
   const [buildingRole, setBuildingRole] = useState<"owner" | "manager" | "">("");
   const [companyName, setCompanyName] = useState("");
@@ -67,6 +70,11 @@ export default function SignupPage() {
       setIsLoading(false);
       return;
     }
+    if (!NAME_PATTERN.test(name.trim())) {
+      setMessage("이름은 한글만 입력해주세요.");
+      setIsLoading(false);
+      return;
+    }
     if (role === "requester" && !requesterAddress.trim()) {
       setMessage("수리 의뢰인용 건물 소재지를 입력해주세요.");
       setIsLoading(false);
@@ -79,6 +87,11 @@ export default function SignupPage() {
     }
     if (role === "contractor" && (!companyName.trim() || !region.trim())) {
       setMessage("수리 업체는 상호와 소재지를 필수로 입력해주세요.");
+      setIsLoading(false);
+      return;
+    }
+    if (role === "contractor" && !COMPANY_PATTERN.test(companyName.trim())) {
+      setMessage("상호는 한글/영문/숫자와 기본 기호만 입력해주세요.");
       setIsLoading(false);
       return;
     }
@@ -97,6 +110,7 @@ export default function SignupPage() {
           role,
           name,
           phone_number: cleanPhone,
+          office_phone_number: officePhoneNumber.replace(/[^0-9]/g, "") || null,
           building_role: role === "requester" ? buildingRole : null,
           requester_address: role === "requester" ? requesterAddress.trim() : null,
           company_name: role === "contractor" ? companyName.trim() : null,
@@ -129,6 +143,7 @@ export default function SignupPage() {
         role,
         name: name.trim(),
         phone_number: cleanPhone,
+        office_phone_number: officePhoneNumber.replace(/[^0-9]/g, "") || null,
         company_name: role === "contractor" ? companyName.trim() : null,
         business_location: role === "contractor" ? region.trim() : null,
         service_regions: role === "contractor" ? serviceRegions : [],
@@ -207,7 +222,7 @@ export default function SignupPage() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">전화번호</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">휴대폰 번호</label>
           <input
             type="tel"
             inputMode="numeric"
@@ -220,6 +235,16 @@ export default function SignupPage() {
             required
           />
           <p className="text-xs text-gray-500 mt-1">010으로 시작하는 11자리 번호만 입력됩니다.</p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">사무실 전화번호 (선택)</label>
+          <input
+            type="tel"
+            value={officePhoneNumber}
+            onChange={(e) => setOfficePhoneNumber(e.target.value)}
+            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="예: 02-123-4567"
+          />
         </div>
 
         {role === "requester" && (
