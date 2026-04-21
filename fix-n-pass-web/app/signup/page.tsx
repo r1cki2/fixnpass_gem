@@ -7,13 +7,16 @@ import Link from "next/link";
 import AddressSearchInput from "@/components/AddressSearchInput";
 import InterestRegionPicker from "@/components/InterestRegionPicker";
 import { getDefaultInterestRegions } from "@/lib/regionAdjacency";
-
-const PHONE_PATTERN = /^010-\d{4}-\d{4}$/;
-const NAME_PATTERN = /^[가-힣\s]+$/;
-const COMPANY_PATTERN = /^[가-힣a-zA-Z0-9\s().,&-]+$/;
+import {
+  normalizeDigits,
+  validateCompanyName,
+  validateKoreanName,
+  validateMobileNumber,
+  validateOfficePhoneNumber,
+} from "@/lib/validation";
 
 function formatKoreanMobile(value: string) {
-  const digits = value.replace(/\D/g, "").slice(0, 11);
+  const digits = normalizeDigits(value).slice(0, 11);
   if (digits.length <= 3) return digits;
   if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
   return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
@@ -65,13 +68,21 @@ export default function SignupPage() {
 
     setIsLoading(true);
     setMessage("");
-    if (!PHONE_PATTERN.test(phoneNumber)) {
-      setMessage("휴대폰 번호는 010-0000-0000 형식(하이픈 포함)으로 입력해주세요.");
+    const mobileErr = validateMobileNumber(phoneNumber);
+    if (mobileErr) {
+      setMessage(mobileErr);
       setIsLoading(false);
       return;
     }
-    if (!NAME_PATTERN.test(name.trim())) {
-      setMessage("이름은 한글만 입력해주세요.");
+    const nameErr = validateKoreanName(name);
+    if (nameErr) {
+      setMessage(nameErr);
+      setIsLoading(false);
+      return;
+    }
+    const officeErr = validateOfficePhoneNumber(officePhoneNumber);
+    if (officeErr) {
+      setMessage(officeErr);
       setIsLoading(false);
       return;
     }
@@ -90,17 +101,21 @@ export default function SignupPage() {
       setIsLoading(false);
       return;
     }
-    if (role === "contractor" && !COMPANY_PATTERN.test(companyName.trim())) {
-      setMessage("상호는 한글/영문/숫자와 기본 기호만 입력해주세요.");
-      setIsLoading(false);
-      return;
+    if (role === "contractor") {
+      const companyErr = validateCompanyName(companyName);
+      if (companyErr) {
+        setMessage(companyErr);
+        setIsLoading(false);
+        return;
+      }
     }
     if (role === "contractor" && serviceRegions.length === 0) {
       setMessage("수리 가능 관심 지역을 1곳 이상 선택해주세요.");
       setIsLoading(false);
       return;
     }
-    const cleanPhone = phoneNumber.replace(/-/g, "");
+    const cleanPhone = normalizeDigits(phoneNumber);
+    const cleanOfficePhone = normalizeDigits(officePhoneNumber);
 
     const { error } = await supabase.auth.signUp({
       email,
@@ -110,7 +125,7 @@ export default function SignupPage() {
           role,
           name,
           phone_number: cleanPhone,
-          office_phone_number: officePhoneNumber.replace(/[^0-9]/g, "") || null,
+          office_phone_number: cleanOfficePhone || null,
           building_role: role === "requester" ? buildingRole : null,
           requester_address: role === "requester" ? requesterAddress.trim() : null,
           company_name: role === "contractor" ? companyName.trim() : null,
@@ -143,7 +158,7 @@ export default function SignupPage() {
         role,
         name: name.trim(),
         phone_number: cleanPhone,
-        office_phone_number: officePhoneNumber.replace(/[^0-9]/g, "") || null,
+        office_phone_number: cleanOfficePhone || null,
         company_name: role === "contractor" ? companyName.trim() : null,
         business_location: role === "contractor" ? region.trim() : null,
         service_regions: role === "contractor" ? serviceRegions : [],

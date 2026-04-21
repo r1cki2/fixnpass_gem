@@ -20,6 +20,11 @@ from supabase import Client, create_client
 
 app = FastAPI()
 
+NAME_PATTERN = re.compile(r"^[가-힣\s]+$")
+COMPANY_PATTERN = re.compile(r"^[가-힣A-Za-z0-9\s().,&\-]+$")
+MOBILE_PATTERN = re.compile(r"^010\d{8}$")
+OFFICE_PATTERN = re.compile(r"^[0-9+\-()\s]{7,20}$")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -240,6 +245,20 @@ def _safe_list(v):
 
 def _normalize_phone(value: Optional[str]) -> str:
     return re.sub(r"[^0-9]", "", value or "")
+
+
+def _validate_profile_fields(name: Optional[str], company_name: Optional[str], phone_number: Optional[str], office_phone_number: Optional[str]):
+    if name is not None and name.strip() and not NAME_PATTERN.fullmatch(name.strip()):
+        raise HTTPException(status_code=400, detail="이름은 한글만 입력 가능합니다.")
+    if company_name is not None and company_name.strip() and not COMPANY_PATTERN.fullmatch(company_name.strip()):
+        raise HTTPException(status_code=400, detail="상호 형식이 올바르지 않습니다.")
+    if phone_number is not None:
+        d = _normalize_phone(phone_number)
+        if d and not MOBILE_PATTERN.fullmatch(d):
+            raise HTTPException(status_code=400, detail="휴대폰 번호는 010으로 시작하는 11자리여야 합니다.")
+    if office_phone_number is not None and str(office_phone_number).strip():
+        if not OFFICE_PATTERN.fullmatch(str(office_phone_number).strip()):
+            raise HTTPException(status_code=400, detail="사무실 전화번호 형식이 올바르지 않습니다.")
 
 
 def _is_contractor_approval_required() -> bool:
@@ -800,12 +819,7 @@ async def get_signup_config():
 @app.post("/api/me/profile")
 async def update_my_profile(body: MyProfileUpdate):
     try:
-        if body.name is not None and body.name.strip():
-            if not re.fullmatch(r"[가-힣\s]+", body.name.strip()):
-                raise HTTPException(status_code=400, detail="이름은 한글만 입력 가능합니다.")
-        if body.company_name is not None and body.company_name.strip():
-            if not re.fullmatch(r"[가-힣A-Za-z0-9\s().,&\-]+", body.company_name.strip()):
-                raise HTTPException(status_code=400, detail="상호 형식이 올바르지 않습니다.")
+        _validate_profile_fields(body.name, body.company_name, body.phone_number, body.office_phone_number)
         before = _get_profile(body.user_id) or {}
         contractor_signup_transition = before.get("role") != "contractor" and body.role == "contractor"
         require_approval = _is_contractor_approval_required()

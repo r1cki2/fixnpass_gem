@@ -10,6 +10,12 @@ import {
 import AddressSearchInput from "@/components/AddressSearchInput";
 import InterestRegionPicker from "@/components/InterestRegionPicker";
 import { getDefaultInterestRegions } from "@/lib/regionAdjacency";
+import {
+  normalizeDigits,
+  validateCompanyName,
+  validateMobileNumber,
+  validateOfficePhoneNumber,
+} from "@/lib/validation";
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -87,8 +93,14 @@ export default function OnboardingPage() {
 
   const handleSubmit = async () => {
     if (!userId || !role) return;
-    if (!phoneNumber.trim()) {
-      alert("휴대폰 번호는 필수입니다.");
+    const mobileErr = validateMobileNumber(phoneNumber);
+    if (mobileErr) {
+      alert(mobileErr);
+      return;
+    }
+    const officeErr = validateOfficePhoneNumber(officePhoneNumber);
+    if (officeErr) {
+      alert(officeErr);
       return;
     }
     if (role === "requester" && !buildingRole) {
@@ -103,6 +115,13 @@ export default function OnboardingPage() {
       alert("업체명(필수)과 활동 지역은 필수입니다.");
       return;
     }
+    if (role === "contractor") {
+      const companyErr = validateCompanyName(companyName);
+      if (companyErr) {
+        alert(companyErr);
+        return;
+      }
+    }
     if (role === "contractor" && serviceRegions.length === 0) {
       alert("관심 지역(수리 가능 범위)을 한 곳 이상 선택해 주세요.");
       return;
@@ -115,8 +134,8 @@ export default function OnboardingPage() {
 
     const profilePayload: any = {
       role,
-      phone_number: phoneNumber.replace(/[^0-9]/g, ""),
-      office_phone_number: officePhoneNumber.replace(/[^0-9]/g, ""),
+      phone_number: normalizeDigits(phoneNumber),
+      office_phone_number: normalizeDigits(officePhoneNumber),
     };
     if (displayName) {
       profilePayload.name = displayName;
@@ -142,7 +161,7 @@ export default function OnboardingPage() {
         requester_address: role === "requester" ? requesterAddress : null,
         region: role === "contractor" ? region.trim() : null,
         company_name: role === "contractor" ? companyName.trim() : null,
-        office_phone_number: officePhoneNumber.replace(/[^0-9]/g, "") || null,
+        office_phone_number: normalizeDigits(officePhoneNumber) || null,
         verification_status: "soft-verified-beta",
       },
     });
@@ -168,8 +187,8 @@ export default function OnboardingPage() {
           user_id: userId,
           role: "contractor",
           company_name: companyName.trim(),
-          phone_number: phoneNumber.replace(/[^0-9]/g, ""),
-          office_phone_number: officePhoneNumber.replace(/[^0-9]/g, ""),
+          phone_number: normalizeDigits(phoneNumber),
+          office_phone_number: normalizeDigits(officePhoneNumber),
           business_location: region.trim(),
           service_regions: serviceRegionsPayload,
         }),

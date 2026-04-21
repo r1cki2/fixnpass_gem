@@ -5,6 +5,13 @@ import { supabase } from "@/lib/supabase";
 import AddressSearchInput from "@/components/AddressSearchInput";
 import InterestRegionPicker from "@/components/InterestRegionPicker";
 import { getDefaultInterestRegions } from "@/lib/regionAdjacency";
+import {
+  normalizeDigits,
+  validateCompanyName,
+  validateKoreanName,
+  validateMobileNumber,
+  validateOfficePhoneNumber,
+} from "@/lib/validation";
 
 export default function MyPage() {
   const [userId, setUserId] = useState<string | null>(null);
@@ -58,12 +65,22 @@ export default function MyPage() {
 
   const save = async () => {
     if (!userId) return alert("로그인이 필요합니다.");
+    const nameErr = validateKoreanName(name);
+    if (nameErr) return alert(nameErr);
+    const mobileErr = validateMobileNumber(phone);
+    if (mobileErr) return alert(mobileErr);
+    const officeErr = validateOfficePhoneNumber(officePhone);
+    if (officeErr) return alert(officeErr);
+    if (role === "contractor") {
+      const companyErr = validateCompanyName(company);
+      if (companyErr) return alert(companyErr);
+    }
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
     const payload: any = {
       user_id: userId,
       name,
-      phone_number: phone,
-      office_phone_number: officePhone,
+      phone_number: normalizeDigits(phone),
+      office_phone_number: normalizeDigits(officePhone),
       role,
       company_name: company,
     };
