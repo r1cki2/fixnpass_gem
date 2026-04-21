@@ -35,18 +35,20 @@ export default function AdminPage() {
   const [roleFilter, setRoleFilter] = useState<"all" | "requester" | "contractor">("all");
   const [approvalFilter, setApprovalFilter] = useState<"all" | "pending" | "active">("all");
   const [userSearch, setUserSearch] = useState("");
+  const [actionLogs, setActionLogs] = useState<any[]>([]);
 
   const baseUrl = useMemo(() => process.env.NEXT_PUBLIC_API_BASE_URL, []);
   const authHeader = (t: string) => ({ Authorization: `Bearer ${t}`, "Content-Type": "application/json" });
 
   const fetchAll = async (t: string) => {
-    const [oRes, aRes, sRes, tRes, pRes, iRes] = await Promise.all([
+    const [oRes, aRes, sRes, tRes, pRes, iRes, lRes] = await Promise.all([
       fetch(`${baseUrl}/api/admin/overview`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/auth-users`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/settings/contractor-approval`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/stats/trends`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/site-announcements`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/inquiries`, { headers: authHeader(t) }),
+      fetch(`${baseUrl}/api/admin/action-logs`, { headers: authHeader(t) }),
     ]);
     if ([oRes, aRes].some((r) => r.status === 401 || r.status === 403)) {
       alert("관리자 권한이 없습니다.");
@@ -62,6 +64,7 @@ export default function AdminPage() {
     }
     if (pRes.ok) setPopAnnouncements((await pRes.json()).data || []);
     if (iRes.ok) setAdminInquiries((await iRes.json()).data || []);
+    if (lRes.ok) setActionLogs((await lRes.json()).data || []);
     setOverview(oJson.data);
     setAuthUsers(aJson.data || []);
     setTrends(tJson.data || { daily: [], weekly: [], monthly: [] });
@@ -135,7 +138,8 @@ export default function AdminPage() {
 
   const bulkDeleteUsers = async () => {
     if (selectedUserIds.length === 0) return alert("삭제할 회원을 선택하세요.");
-    if (!confirm(`${selectedUserIds.length}개 계정을 삭제하시겠습니까? (임시 보관 기록됨)`)) return;
+    const typed = window.prompt(`삭제를 진행하려면 DELETE ${selectedUserIds.length} 를 입력하세요.`);
+    if (typed !== `DELETE ${selectedUserIds.length}`) return alert("확인 문구가 일치하지 않아 취소되었습니다.");
     const res = await fetch(`${baseUrl}/api/admin/auth-users/bulk-remove`, {
       method: "POST",
       headers: authHeader(token),
@@ -318,6 +322,20 @@ export default function AdminPage() {
         <TrendCard title="일간 트렌드(30일)" items={trends.daily} />
         <TrendCard title="주간 트렌드(최근)" items={trends.weekly} />
         <TrendCard title="월간 트렌드(1년)" items={trends.monthly} />
+      </section>
+      <section className="bg-white border rounded-2xl p-5">
+        <h2 className="text-xl font-bold mb-3">관리자 작업 로그</h2>
+        <div className="max-h-[320px] overflow-y-auto space-y-2">
+          {actionLogs.map((x) => (
+            <div key={x.id} className="border rounded-lg p-2 text-xs">
+              <div className="font-semibold">{x.action}</div>
+              <div className="text-slate-500">
+                {x.admin_email} · {x.created_at ? new Date(x.created_at).toLocaleString("ko-KR") : ""}
+              </div>
+              <div className="text-slate-600 break-all">{JSON.stringify(x.payload || {})}</div>
+            </div>
+          ))}
+        </div>
       </section>
     </div>
   );

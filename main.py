@@ -100,6 +100,16 @@ def _log_admin_action(action: str, admin_email: str, payload: dict):
         admin_email,
         json.dumps(payload, ensure_ascii=False),
     )
+    try:
+        supabase.table("admin_action_logs").insert(
+            {
+                "action": action,
+                "admin_email": admin_email,
+                "payload": payload,
+            }
+        ).execute()
+    except Exception:
+        pass
 
 
 def _extract_bearer(authorization: Optional[str]) -> str:
@@ -382,13 +392,15 @@ def _enqueue_and_maybe_send(event_type: str, user_id: str, payload: dict):
         if not email:
             return
         if event_type == "new_request_in_interest_region":
-            subject = "[Fix&Pass] 관심 지역 신규 요청이 등록되었습니다"
+            subject = "[Fix&Pass] 신규 견적 요청이 등록되었습니다"
             body = (
-                "관심 지역에 신규 수리 요청이 등록되었습니다.\n\n"
+                "안녕하세요. Fix&Pass 알림입니다.\n\n"
+                "관심 지역에 새로운 견적 요청이 등록되었습니다.\n"
                 f"- 현장 별칭: {payload.get('site_alias')}\n"
                 f"- 요청 ID: {payload.get('repair_request_id')}\n"
                 f"- 지역: {payload.get('region_summary')}\n"
-                "수리 마켓에서 상세를 확인해주세요."
+                f"- 요청 시각: {payload.get('created_at') or '-'}\n\n"
+                "수리 마켓에서 상세 내용을 확인해 주세요."
             )
         elif event_type == "first_bid_submitted":
             subject = "[Fix&Pass] 최초 견적 제출이 접수되었습니다"
@@ -406,11 +418,16 @@ def _enqueue_and_maybe_send(event_type: str, user_id: str, payload: dict):
                 "서비스에서 상세 진행 상태를 확인해주세요."
             )
         elif event_type == "new_bid_for_requester":
-            subject = "[Fix&Pass] 요청하신 건에 신규 견적이 등록되었습니다"
+            action = payload.get("action") or "created"
+            action_kr = "신규 등록" if action == "created" else "수정"
+            subject = f"[Fix&Pass] 요청하신 건에 견적이 {action_kr}되었습니다"
             body = (
-                "요청하신 수리 건에 신규 견적이 등록되었습니다.\n\n"
+                "안녕하세요. Fix&Pass 알림입니다.\n\n"
+                f"요청하신 수리 건에 견적이 {action_kr}되었습니다.\n"
                 f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
-                "내 요청 내역에서 견적을 확인해 주세요."
+                f"- 견적 ID: {payload.get('bid_id')}\n"
+                f"- 견적 금액: {payload.get('bid_amount')}\n\n"
+                "내 요청 내역에서 상세 견적을 확인해 주세요."
             )
         else:
             subject = "[Fix&Pass] 알림"
@@ -1182,6 +1199,7 @@ async def submit_bid(bid: BidSubmission):
                 .eq("bid_id", current_bid["bid_id"])
                 .execute()
             )
+            bid_action = "updated"
         else:
             res = (
                 supabase.table("bids")
@@ -1195,6 +1213,7 @@ async def submit_bid(bid: BidSubmission):
                 )
                 .execute()
             )
+            bid_action = "created"
 
         if current_status == "requested":
             (
@@ -1224,7 +1243,12 @@ async def submit_bid(bid: BidSubmission):
             _enqueue_and_maybe_send(
                 "new_bid_for_requester",
                 req_owner.data[0]["requester_id"],
-                {"repair_request_id": bid.repair_request_id, "bid_id": res.data[0].get("bid_id")},
+                {
+                    "repair_request_id": bid.repair_request_id,
+                    "bid_id": res.data[0].get("bid_id"),
+                    "bid_amount": f"{int(bid.bid_amount):,}원",
+                    "action": bid_action,
+                },
             )
         return {"status": "success", "data": res.data[0]}
     except HTTPException as e:
@@ -1517,12 +1541,15 @@ async def create_inquiry(
     new_id = ins.data[0]["id"] if ins.data else None
     if ADMIN_EMAIL and MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS:
         try:
-            subj = "[Fix&Pass] 신규 고객 문의 등록"
+            subj = "[Fix&Pass] 신규 고객 문의가 등록되었습니다"
             mail_body = (
-                "새 고객 문의가 등록되었습니다.\n\n"
+                "안녕하세요. Fix&Pass 관리자 알림입니다.\n\n"
+                "새 고객 문의가 등록되었습니다.\n"
                 f"- 문의 ID: {new_id}\n"
                 f"- 작성자: {user['email'] or '-'}\n"
                 f"- 제목: {body.title.strip()}\n"
+                f"- 등록 시각: {datetime.utcnow().isoformat()}Z\n\n"
+                f"관리자 페이지에서 확인: /inquiry/{new_id}"
             )
             _send_mail(ADMIN_EMAIL, subj, mail_body)
         except Exception as e:
@@ -2020,6 +2047,22 @@ async def admin_bulk_update_request_status(
     return {"status": "success", "data": {"updated_count": len(ids)}}
 
 
+@app.get("/api/admin/action-logs")
+async def admin_action_logs(authorization: Optional[str] = Header(default=None)):
+    _require_admin(authorization)
+    try:
+        rows = (
+            supabase.table("admin_action_logs")
+            .select("id, action, admin_email, payload, created_at")
+            .order("created_at", desc=True)
+            .limit(300)
+            .execute()
+        )
+        return {"status": "success", "data": rows.data or []}
+    except Exception:
+        return {"status": "success", "data": []}
+
+
 @app.post("/api/notifications/process")
 async def process_notification_queue(
     cron_secret: Optional[str] = Header(default=None, alias="cron-secret"),
@@ -2091,6 +2134,28 @@ async def process_notification_queue(
                         f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
                         f"- 선택된 견적 ID: {payload.get('selected_bid_id')}\n"
                         "서비스에서 상세 진행 상태를 확인해주세요."
+                    )
+                elif n["event_type"] == "new_request_in_interest_region":
+                    subject = "[Fix&Pass] 신규 견적 요청이 등록되었습니다"
+                    body = (
+                        "안녕하세요. Fix&Pass 알림입니다.\n\n"
+                        "관심 지역에 새로운 견적 요청이 등록되었습니다.\n"
+                        f"- 현장 별칭: {payload.get('site_alias')}\n"
+                        f"- 요청 ID: {payload.get('repair_request_id')}\n"
+                        f"- 지역: {payload.get('region_summary')}\n"
+                        "수리 마켓에서 상세 내용을 확인해 주세요."
+                    )
+                elif n["event_type"] == "new_bid_for_requester":
+                    action = payload.get("action") or "created"
+                    action_kr = "신규 등록" if action == "created" else "수정"
+                    subject = f"[Fix&Pass] 요청하신 건에 견적이 {action_kr}되었습니다"
+                    body = (
+                        "안녕하세요. Fix&Pass 알림입니다.\n\n"
+                        f"요청하신 수리 건에 견적이 {action_kr}되었습니다.\n"
+                        f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
+                        f"- 견적 ID: {payload.get('bid_id')}\n"
+                        f"- 견적 금액: {payload.get('bid_amount')}\n\n"
+                        "내 요청 내역에서 상세 견적을 확인해 주세요."
                     )
                 else:
                     subject = "[Fix&Pass] 알림"

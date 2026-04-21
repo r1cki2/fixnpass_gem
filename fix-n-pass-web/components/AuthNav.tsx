@@ -29,7 +29,9 @@ export default function AuthNav() {
   // 로그아웃 처리 함수
   const handleLogout = async () => {
     await supabase.auth.signOut();
-    router.push("/"); // 메인 화면으로 이동
+    setUser(null);
+    router.refresh();
+    window.location.replace("/");
   };
 
   // 로그인 상태일 때 보여줄 UI
