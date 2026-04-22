@@ -174,38 +174,45 @@ export default function ContractorMarketPage() {
               </span>
             </div>
             <p className="text-sm text-gray-500 mb-3">{req.region_summary}</p>
-            <p className="text-xs text-slate-400 mb-1">
-              요청 등록일: {req.created_at ? new Date(req.created_at).toLocaleDateString("ko-KR") : "-"}
-            </p>
-            <p className="text-xs text-slate-500 mb-1">
-              견적 마감일:{" "}
-              {req.quote_deadline_at
-                ? new Date(req.quote_deadline_at).toLocaleDateString("ko-KR")
-                : "-"}
-              {req.quote_deadline_at && (
-                <span className="ml-2 font-bold text-rose-600">
-                  {(() => {
-                    const d = Math.ceil((new Date(req.quote_deadline_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-                    return d >= 0 ? `D-${d}` : `D+${Math.abs(d)}`;
-                  })()}
-                </span>
-              )}
-            </p>
-            <p className="text-xs text-slate-500 mb-2">
-              내 견적 등록일:{" "}
-              {req.my_bid_submitted_at
-                ? new Date(req.my_bid_submitted_at).toLocaleDateString("ko-KR")
-                : req.already_bid
-                  ? "-"
-                  : "미제출"}
-            </p>
-            <div className="text-xs text-indigo-600 mb-2">요청 상태: {req.request_stage_kr || req.status}</div>
-            <div className="text-sm text-gray-700">
-              요청 항목: <span className="font-semibold">{req.selected_items?.length || 0}개</span>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
+              <InfoChip label="요청 등록일" value={req.created_at ? new Date(req.created_at).toLocaleDateString("ko-KR") : "-"} />
+              <InfoChip
+                label="견적 마감일"
+                value={
+                  req.quote_deadline_at
+                    ? `${new Date(req.quote_deadline_at).toLocaleDateString("ko-KR")} (${(() => {
+                        const d = Math.ceil((new Date(req.quote_deadline_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                        return d >= 0 ? `D-${d}` : `D+${Math.abs(d)}`;
+                      })()})`
+                    : "-"
+                }
+              />
+              <InfoChip
+                label="내 견적 등록일"
+                value={
+                  req.my_bid_submitted_at
+                    ? new Date(req.my_bid_submitted_at).toLocaleDateString("ko-KR")
+                    : req.already_bid
+                      ? "-"
+                      : "미제출"
+                }
+              />
+              <InfoChip label="요청 상태" value={req.request_stage_kr || req.status} />
+              <InfoChip label="요청 항목" value={`${req.selected_items?.length || 0}개`} />
+              <InfoChip label="내 상태" value={req.my_bid_status || (req.already_bid ? "견적 제출함" : "미제출")} />
             </div>
           </Link>
         ))}
       </div>
+    </div>
+  );
+}
+
+function InfoChip({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+      <p className="text-[10px] text-slate-500 mb-1">{label}</p>
+      <p className="font-semibold text-slate-700">{value}</p>
     </div>
   );
 }

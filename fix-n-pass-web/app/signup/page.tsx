@@ -38,6 +38,7 @@ export default function SignupPage() {
   const [employees, setEmployees] = useState("");
   const [requireApproval, setRequireApproval] = useState(true);
   const [message, setMessage] = useState("");
+  const [nameError, setNameError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
@@ -200,7 +201,7 @@ export default function SignupPage() {
   };
 
   return (
-    <div className="max-w-md mx-auto mt-20 p-6 bg-white rounded-xl shadow-md border border-gray-200">
+    <div className="max-w-xl mx-auto mt-20 p-6 bg-white rounded-xl shadow-md border border-gray-200">
       <h1 className="text-3xl font-bold text-center text-gray-800 mb-2">회원가입</h1>
       <p className="text-center text-sm text-gray-500 mb-8">
         역할을 먼저 선택하고, 역할에 맞는 정보를 입력해 가입을 완료하세요.
@@ -227,33 +228,69 @@ export default function SignupPage() {
           </div>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">이름</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            본인 이름 <span className="text-rose-600">(필수, 한글만)</span>
+          </label>
           <input
             type="text"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setName(e.target.value);
+              if (nameError) setNameError("");
+            }}
+            onBlur={() => {
+              const err = validateKoreanName(name);
+              setNameError(err || "");
+            }}
             className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="홍길동"
             required
           />
+          {nameError && <p className="text-xs text-rose-600 mt-1">{nameError}</p>}
         </div>
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">휴대폰 번호</label>
-          <div className="grid grid-cols-[80px_1fr_1fr] gap-2 items-center">
+          <div className="grid grid-cols-[84px_16px_1fr_16px_1fr] gap-1 items-center max-w-md">
             <input value={mobile1} onChange={(e) => setMobile1(normalizeDigits(e.target.value).slice(0, 3))} className="px-3 py-3 border border-gray-300 rounded-lg" />
+            <span className="text-center text-slate-400">-</span>
             <input value={mobile2} onChange={(e) => setMobile2(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" />
+            <span className="text-center text-slate-400">-</span>
             <input value={mobile3} onChange={(e) => setMobile3(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" />
           </div>
           <p className="text-xs text-gray-500 mt-1">010으로 시작하는 11자리 번호만 입력됩니다.</p>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">사무실 전화번호 (선택)</label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-[84px_16px_1fr_16px_1fr] gap-1 items-center max-w-md">
             <input value={office1} onChange={(e) => setOffice1(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" placeholder="02" />
+            <span className="text-center text-slate-400">-</span>
             <input value={office2} onChange={(e) => setOffice2(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" placeholder="1234" />
+            <span className="text-center text-slate-400">-</span>
             <input value={office3} onChange={(e) => setOffice3(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" placeholder="5678" />
           </div>
+          <p className="text-xs text-gray-500 mt-1">숫자만 입력하면 되며, 형식은 02-1234-5678 / 031-123-4567 형태만 허용됩니다.</p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">소재지 <span className="text-rose-600">(필수)</span></label>
+          <AddressSearchInput value={role === "contractor" ? region : requesterAddress} onChange={(v) => {
+            if (role === "contractor") {
+              setRegion(v);
+              setServiceRegions((prev) => (prev.length ? prev : getDefaultInterestRegions(v)));
+            } else {
+              setRequesterAddress(v);
+            }
+          }} />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">상세주소 (선택)</label>
+          <input
+            value={requesterAddressDetail}
+            onChange={(e) => setRequesterAddressDetail(e.target.value)}
+            className="w-full px-4 py-3 border border-gray-300 rounded-lg"
+            placeholder="동/호수 등"
+          />
         </div>
 
         {role === "requester" && (
@@ -272,19 +309,6 @@ export default function SignupPage() {
                 <option value="owner">건물주</option>
                 <option value="manager">관리 대행/관리인</option>
               </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">건물 소재지</label>
-              <AddressSearchInput value={requesterAddress} onChange={setRequesterAddress} />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">상세주소 (선택)</label>
-              <input
-                value={requesterAddressDetail}
-                onChange={(e) => setRequesterAddressDetail(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg"
-                placeholder="동/호수 등"
-              />
             </div>
           </>
         )}
@@ -306,19 +330,7 @@ export default function SignupPage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                소재지 <span className="text-rose-600">(필수)</span>
-              </label>
-              <AddressSearchInput
-                value={region}
-                onChange={(v) => {
-                  setRegion(v);
-                  setServiceRegions((prev) => (prev.length ? prev : getDefaultInterestRegions(v)));
-                }}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                관심 지역(수리 가능 범위)
+                관심 지역(수리 가능 범위) <span className="text-rose-600">(필수)</span>
               </label>
               <InterestRegionPicker value={serviceRegions} baseAddress={region} onChange={setServiceRegions} />
             </div>

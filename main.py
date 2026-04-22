@@ -1,9 +1,11 @@
 import functools
+import asyncio
 import json
 import logging
 import smtplib
 import os
 import re
+import random
 from collections import defaultdict
 import tempfile
 import uuid
@@ -286,6 +288,31 @@ def _safe_list(v):
 
 def _normalize_phone(value: Optional[str]) -> str:
     return re.sub(r"[^0-9]", "", value or "")
+
+
+async def _post_gemini_with_retry(payload: dict, max_attempts: int = 4) -> dict:
+    last_error: Optional[str] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                ai_res = await client.post(GEMINI_URL, json=payload)
+            res_json = ai_res.json()
+            if "candidates" in res_json:
+                return res_json
+            msg = res_json.get("error", {}).get("message", "AI 모델 응답 생성 실패")
+            last_error = msg
+            retryable = ai_res.status_code in [429, 500, 502, 503, 504] or "high demand" in msg.lower()
+            if attempt >= max_attempts or not retryable:
+                raise HTTPException(status_code=500, detail=f"AI 분석 실패: {msg}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            last_error = str(e)
+            if attempt >= max_attempts:
+                break
+        base = 0.8 * (2 ** (attempt - 1))
+        await asyncio.sleep(base + random.uniform(0.15, 1.1))
+    raise HTTPException(status_code=500, detail=f"AI 분석 실패: {last_error or '일시적 오류'}")
 
 
 def _validate_profile_fields(name: Optional[str], company_name: Optional[str], phone_number: Optional[str], office_phone_number: Optional[str]):
@@ -572,18 +599,11 @@ async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File
 
 텍스트: {text[:20000]}
 """
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            ai_res = await client.post(
-                GEMINI_URL, json={"contents": [{"parts": [{"text": prompt}]}]}
-            )
-            res_json = ai_res.json()
-            if "candidates" not in res_json:
-                error_msg = res_json.get("error", {}).get("message", "AI 모델 응답 생성 실패")
-                raise HTTPException(status_code=500, detail=f"AI 분석 실패: {error_msg}")
-            ai_raw = res_json["candidates"][0]["content"]["parts"][0]["text"]
-            if "```" in ai_raw:
-                ai_raw = ai_raw.split("```")[1].replace("json", "").strip().split("```")[0].strip()
-            ai_data = json.loads(ai_raw)
+        res_json = await _post_gemini_with_retry({"contents": [{"parts": [{"text": prompt}]}]})
+        ai_raw = res_json["candidates"][0]["content"]["parts"][0]["text"]
+        if "```" in ai_raw:
+            ai_raw = ai_raw.split("```")[1].replace("json", "").strip().split("```")[0].strip()
+        ai_data = json.loads(ai_raw)
 
         # 3) 마스킹 PDF 생성/업로드 (LLM 추가 호출 없음)
         masked_bytes = _build_masked_pdf(file_bytes, ai_data)
@@ -1766,7 +1786,7 @@ _bootstrap_master_admin()
 
 @app.get("/api/admin/auth-users")
 async def admin_list_auth_users(authorization: Optional[str] = Header(default=None)):
-    _require_admin(authorization)
+    admin_ctx = _require_admin(authorization)
     all_users: list = []
     page = 1
     for _ in range(20):
@@ -1829,8 +1849,26 @@ async def admin_list_auth_users(authorization: Optional[str] = Header(default=No
                 "role": prof.get("role"),
                 "is_active": prof.get("is_active", True),
                 "profile_created_at": prof.get("created_at"),
+                "is_master_admin": bool(email and str(email).lower() == MASTER_ADMIN_EMAIL),
+                "is_admin": False,
             }
         )
+    role_rows = supabase.table("admin_roles").select("user_id").execute().data or []
+    admin_set = {str(x.get("user_id")) for x in role_rows}
+    for row in out:
+        if row["is_master_admin"]:
+            row["is_admin"] = True
+            row["role_display"] = "Master Admin"
+        elif row["id"] in admin_set:
+            row["is_admin"] = True
+            row["role_display"] = "Administrator"
+        else:
+            row["role_display"] = "수리 업체" if row.get("role") == "contractor" else "수리 의뢰인"
+    # Non-master admin cannot enumerate master metadata details beyond listing.
+    if not admin_ctx.get("is_master"):
+        for row in out:
+            if row.get("is_master_admin"):
+                row["role_display"] = "Master Admin"
     out.sort(key=lambda x: (x.get("email") or "").lower())
     return {"status": "success", "data": out}
 

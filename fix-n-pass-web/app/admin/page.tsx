@@ -333,7 +333,7 @@ export default function AdminPage() {
           <table className="w-full text-sm min-w-[1220px]">
             <thead><tr className="border-b bg-slate-50">
               <th className="py-2 px-2"></th><th className="py-2 px-2">이메일</th><th className="py-2 px-2">이름</th><th className="py-2 px-2">UUID</th>
-              <th className="py-2 px-2">역할</th><th className="py-2 px-2">휴대폰</th><th className="py-2 px-2">사무실 전화</th><th className="py-2 px-2">회사명</th><th className="py-2 px-2">상태</th><th className="py-2 px-2">액션</th>
+              <th className="py-2 px-2">역할</th><th className="py-2 px-2">권한표시</th><th className="py-2 px-2">휴대폰</th><th className="py-2 px-2">사무실 전화</th><th className="py-2 px-2">회사명</th><th className="py-2 px-2">상태</th><th className="py-2 px-2">액션</th>
             </tr></thead>
             <tbody>
               {filteredUsers.map((u) => (
@@ -342,7 +342,14 @@ export default function AdminPage() {
                   <td className="py-2 px-2 break-all">{u.email || "-"}</td>
                   <td className="py-2 px-2">{u.name || "-"}</td>
                   <td className="py-2 px-2 text-xs font-mono break-all">{u.id}</td>
-                  <td className="py-2 px-2"><select className="border rounded px-1 py-1 text-xs" value={u.role || "requester"} onChange={(e) => updateUserRole(u.id, e.target.value as any)}><option value="requester">수리 의뢰인</option><option value="contractor">수리 업체</option></select></td>
+                  <td className="py-2 px-2">
+                    {u.is_admin ? (
+                      <span className="text-xs font-semibold">{u.is_master_admin ? "Master Admin" : "Administrator"}</span>
+                    ) : (
+                      <select className="border rounded px-1 py-1 text-xs" value={u.role || "requester"} onChange={(e) => updateUserRole(u.id, e.target.value as any)}><option value="requester">수리 의뢰인</option><option value="contractor">수리 업체</option></select>
+                    )}
+                  </td>
+                  <td className="py-2 px-2 text-xs font-semibold">{u.role_display || "-"}</td>
                   <td className="py-2 px-2 text-xs">{u.phone_number || "-"}</td>
                   <td className="py-2 px-2 text-xs">{u.office_phone_number || "-"}</td>
                   <td className="py-2 px-2 text-xs">{u.company_name || "-"}</td>
