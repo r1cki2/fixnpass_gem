@@ -34,6 +34,8 @@ export default function SignupPage() {
   const [companyName, setCompanyName] = useState("");
   const [region, setRegion] = useState("");
   const [serviceRegions, setServiceRegions] = useState<string[]>([]);
+  const [selectedSidoForDemand, setSelectedSidoForDemand] = useState("서울특별시");
+  const [regionDemandCounts, setRegionDemandCounts] = useState<Record<string, number>>({});
   const [years, setYears] = useState("");
   const [employees, setEmployees] = useState("");
   const [requireApproval, setRequireApproval] = useState(true);
@@ -53,6 +55,21 @@ export default function SignupPage() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (role !== "contractor") return;
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+    if (!baseUrl) return;
+    (async () => {
+      try {
+        const res = await fetch(`${baseUrl}/api/regions/open-demand?sido=${encodeURIComponent(selectedSidoForDemand)}`);
+        const json = await res.json().catch(() => ({}));
+        if (res.ok && json.data) setRegionDemandCounts(json.data);
+      } catch {
+        setRegionDemandCounts({});
+      }
+    })();
+  }, [role, selectedSidoForDemand]);
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -251,23 +268,23 @@ export default function SignupPage() {
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">휴대폰 번호</label>
-          <div className="grid grid-cols-[84px_16px_1fr_16px_1fr] gap-1 items-center max-w-md">
-            <input value={mobile1} onChange={(e) => setMobile1(normalizeDigits(e.target.value).slice(0, 3))} className="px-3 py-3 border border-gray-300 rounded-lg" />
+          <div className="grid grid-cols-[74px_14px_1fr_14px_1fr] gap-1 items-center w-full max-w-[360px]">
+            <input value={mobile1} onChange={(e) => setMobile1(normalizeDigits(e.target.value).slice(0, 3))} className="min-w-0 px-2 py-3 border border-gray-300 rounded-lg" />
             <span className="text-center text-slate-400">-</span>
-            <input value={mobile2} onChange={(e) => setMobile2(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" />
+            <input value={mobile2} onChange={(e) => setMobile2(normalizeDigits(e.target.value).slice(0, 4))} className="min-w-0 px-2 py-3 border border-gray-300 rounded-lg" />
             <span className="text-center text-slate-400">-</span>
-            <input value={mobile3} onChange={(e) => setMobile3(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" />
+            <input value={mobile3} onChange={(e) => setMobile3(normalizeDigits(e.target.value).slice(0, 4))} className="min-w-0 px-2 py-3 border border-gray-300 rounded-lg" />
           </div>
           <p className="text-xs text-gray-500 mt-1">010으로 시작하는 11자리 번호만 입력됩니다.</p>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">사무실 전화번호 (선택)</label>
-          <div className="grid grid-cols-[84px_16px_1fr_16px_1fr] gap-1 items-center max-w-md">
-            <input value={office1} onChange={(e) => setOffice1(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" placeholder="02" />
+          <div className="grid grid-cols-[74px_14px_1fr_14px_1fr] gap-1 items-center w-full max-w-[360px]">
+            <input value={office1} onChange={(e) => setOffice1(normalizeDigits(e.target.value).slice(0, 4))} className="min-w-0 px-2 py-3 border border-gray-300 rounded-lg" placeholder="02" />
             <span className="text-center text-slate-400">-</span>
-            <input value={office2} onChange={(e) => setOffice2(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" placeholder="1234" />
+            <input value={office2} onChange={(e) => setOffice2(normalizeDigits(e.target.value).slice(0, 4))} className="min-w-0 px-2 py-3 border border-gray-300 rounded-lg" placeholder="1234" />
             <span className="text-center text-slate-400">-</span>
-            <input value={office3} onChange={(e) => setOffice3(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" placeholder="5678" />
+            <input value={office3} onChange={(e) => setOffice3(normalizeDigits(e.target.value).slice(0, 4))} className="min-w-0 px-2 py-3 border border-gray-300 rounded-lg" placeholder="5678" />
           </div>
           <p className="text-xs text-gray-500 mt-1">숫자만 입력하면 되며, 형식은 02-1234-5678 / 031-123-4567 형태만 허용됩니다.</p>
         </div>
@@ -332,7 +349,13 @@ export default function SignupPage() {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 관심 지역(수리 가능 범위) <span className="text-rose-600">(필수)</span>
               </label>
-              <InterestRegionPicker value={serviceRegions} baseAddress={region} onChange={setServiceRegions} />
+              <InterestRegionPicker
+                value={serviceRegions}
+                baseAddress={region}
+                onChange={setServiceRegions}
+                regionDemandCounts={regionDemandCounts}
+                onSidoChange={setSelectedSidoForDemand}
+              />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

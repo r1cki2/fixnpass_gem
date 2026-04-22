@@ -16,9 +16,11 @@ type Props = {
   onChange: (next: string[]) => void;
   /** 업체 소재지 주소 — 인접 지역 자동 선택 기준 */
   baseAddress?: string;
+  regionDemandCounts?: Record<string, number>;
+  onSidoChange?: (sido: string) => void;
 };
 
-export default function InterestRegionPicker({ value, onChange, baseAddress }: Props) {
+export default function InterestRegionPicker({ value, onChange, baseAddress, regionDemandCounts, onSidoChange }: Props) {
   const [selectedSido, setSelectedSido] = useState<string>(SIDO_OPTIONS[0] || "서울특별시");
   const dragRef = useRef<{ active: boolean; add: boolean }>({ active: false, add: true });
   const anchorRef = useRef<{ sido: string; index: number } | null>(null);
@@ -38,7 +40,10 @@ export default function InterestRegionPicker({ value, onChange, baseAddress }: P
   useEffect(() => {
     const m = matchRegionFromAddress(baseAddress || "");
     const sido = m ? sidoOfLabel(m) : null;
-    if (sido) setSelectedSido(sido);
+    if (sido) {
+      setSelectedSido(sido);
+      onSidoChange?.(sido);
+    }
   }, [baseAddress]);
 
   const list = REGION_OPTIONS_BY_SIDO[selectedSido] || [];
@@ -110,6 +115,7 @@ export default function InterestRegionPicker({ value, onChange, baseAddress }: P
           value={selectedSido}
           onChange={(e) => {
             setSelectedSido(e.target.value);
+            onSidoChange?.(e.target.value);
           }}
         >
           {SIDO_OPTIONS.map((s) => (
@@ -144,6 +150,34 @@ export default function InterestRegionPicker({ value, onChange, baseAddress }: P
         그리드에서 드래그하면 여러 구·시를 한 번에 선택·해제할 수 있습니다. Shift+클릭으로 구간 선택(Alt+Shift는
         구간 해제)합니다. 처음에는 소재지와 맞닿은 인접 행정구역이 자동으로 잡힙니다.
       </p>
+      {regionDemandCounts && (
+        <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-3">
+          <p className="text-xs text-indigo-700 font-semibold mb-2">
+            같은 시/도의 진행 중 견적 요청을 반영해 AI 기반으로 추천합니다.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(regionDemandCounts)
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 8)
+              .map(([region, count]) => (
+                <button
+                  key={region}
+                  type="button"
+                  onClick={() => {
+                    if (selected.has(region)) return;
+                    onChange([...new Set([...value, region])]);
+                  }}
+                  className="px-2 py-1 rounded-full text-xs border border-indigo-200 bg-white text-indigo-700"
+                >
+                  {region.replace(/^[^\s]+\s/, "")} · {count}건
+                </button>
+              ))}
+            {Object.keys(regionDemandCounts).length === 0 && (
+              <span className="text-xs text-indigo-500">현재 진행 중인 견적 요청 데이터가 없습니다.</span>
+            )}
+          </div>
+        </div>
+      )}
       <div
         className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 select-none touch-none"
         onPointerLeave={() => {

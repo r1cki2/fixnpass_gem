@@ -867,6 +867,41 @@ async def recommend_regions(base_region: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/regions/open-demand")
+async def open_region_demand(sido: str):
+    try:
+        prefix = (sido or "").strip()
+        if not prefix:
+            return {"status": "success", "data": {}}
+        now_iso = datetime.utcnow().isoformat() + "Z"
+        rows = (
+            supabase.table("repair_requests")
+            .select("region_summary, status, quote_deadline_at, selected_bid_ids, is_hidden")
+            .ilike("region_summary", f"{prefix}%")
+            .in_("status", ["requested", "bidding"])
+            .order("created_at", desc=True)
+            .limit(1000)
+            .execute()
+        )
+        counts: dict[str, int] = {}
+        for r in rows.data or []:
+            if r.get("is_hidden"):
+                continue
+            selected = r.get("selected_bid_ids") or []
+            if isinstance(selected, list) and len(selected) > 0:
+                continue
+            dl = r.get("quote_deadline_at")
+            if dl and str(dl) < now_iso:
+                continue
+            region = _normalize_region_summary(str(r.get("region_summary") or "").strip())
+            if not region.startswith(f"{prefix} "):
+                continue
+            counts[region] = counts.get(region, 0) + 1
+        return {"status": "success", "data": counts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/signup-config")
 async def get_signup_config():
     return {
