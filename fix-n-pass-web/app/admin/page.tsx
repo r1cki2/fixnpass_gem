@@ -36,12 +36,17 @@ export default function AdminPage() {
   const [approvalFilter, setApprovalFilter] = useState<"all" | "pending" | "active">("all");
   const [userSearch, setUserSearch] = useState("");
   const [actionLogs, setActionLogs] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<"requests" | "inquiries" | "ops" | "stats">("requests");
+  const [adminRequests, setAdminRequests] = useState<any[]>([]);
+  const [reqStatusFilter, setReqStatusFilter] = useState("ALL");
+  const [reqSearch, setReqSearch] = useState("");
+  const [grantUserId, setGrantUserId] = useState("");
 
   const baseUrl = useMemo(() => process.env.NEXT_PUBLIC_API_BASE_URL, []);
   const authHeader = (t: string) => ({ Authorization: `Bearer ${t}`, "Content-Type": "application/json" });
 
   const fetchAll = async (t: string) => {
-    const [oRes, aRes, sRes, tRes, pRes, iRes, lRes] = await Promise.all([
+    const [oRes, aRes, sRes, tRes, pRes, iRes, lRes, rRes] = await Promise.all([
       fetch(`${baseUrl}/api/admin/overview`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/auth-users`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/settings/contractor-approval`, { headers: authHeader(t) }),
@@ -49,6 +54,7 @@ export default function AdminPage() {
       fetch(`${baseUrl}/api/admin/site-announcements`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/inquiries`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/action-logs`, { headers: authHeader(t) }),
+      fetch(`${baseUrl}/api/admin/requests?status=${encodeURIComponent(reqStatusFilter)}`, { headers: authHeader(t) }),
     ]);
     if ([oRes, aRes].some((r) => r.status === 401 || r.status === 403)) {
       alert("관리자 권한이 없습니다.");
@@ -65,6 +71,7 @@ export default function AdminPage() {
     if (pRes.ok) setPopAnnouncements((await pRes.json()).data || []);
     if (iRes.ok) setAdminInquiries((await iRes.json()).data || []);
     if (lRes.ok) setActionLogs((await lRes.json()).data || []);
+    if (rRes.ok) setAdminRequests((await rRes.json()).data || []);
     setOverview(oJson.data);
     setAuthUsers(aJson.data || []);
     setTrends(tJson.data || { daily: [], weekly: [], monthly: [] });
@@ -79,7 +86,7 @@ export default function AdminPage() {
       await fetchAll(accessToken);
       setLoading(false);
     })();
-  }, [router, baseUrl]);
+  }, [router, baseUrl, reqStatusFilter]);
 
   const updateContractorApprovalSetting = async (next: boolean) => {
     const res = await fetch(`${baseUrl}/api/admin/settings/contractor-approval`, {
@@ -165,6 +172,20 @@ export default function AdminPage() {
     await fetchAll(token);
   };
 
+  const bulkRequestAction = async (action: "hide" | "delete") => {
+    if (selectedRequestIds.length === 0) return alert("처리할 요청을 선택하세요.");
+    if (!confirm(`${selectedRequestIds.length}건에 대해 ${action === "hide" ? "비공개" : "삭제"}를 진행할까요?`)) return;
+    const res = await fetch(`${baseUrl}/api/admin/requests/bulk-action`, {
+      method: "POST",
+      headers: authHeader(token),
+      body: JSON.stringify({ request_ids: selectedRequestIds, action }),
+    });
+    const json = await res.json();
+    if (!res.ok) return alert(json.detail || "처리 실패");
+    setSelectedRequestIds([]);
+    await fetchAll(token);
+  };
+
   const deploySitePopup = async () => {
     const res = await fetch(`${baseUrl}/api/admin/site-announcements/deploy`, {
       method: "POST",
@@ -191,6 +212,21 @@ export default function AdminPage() {
     return [u.email, u.name, u.id, u.company_name, u.phone_number, u.office_phone_number]
       .some((v) => String(v || "").toLowerCase().includes(q));
   });
+  const visibleRequests = adminRequests.filter((r) => {
+    const q = reqSearch.trim().toLowerCase();
+    if (!q) return true;
+    return [
+      r.repair_request_id,
+      r.status,
+      r.building_name,
+      r.region_summary,
+      r.requester_name,
+      ...(r.bid_companies || []),
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(q);
+  });
 
   return (
     <div className="max-w-6xl mx-auto py-8 space-y-8">
@@ -204,26 +240,41 @@ export default function AdminPage() {
         <Card title="총 견적" value={overview.counts.bids} />
         <Card title="총 사용자 프로필" value={overview.counts.profiles} />
       </div>
+      <div className="flex gap-2">
+        <button onClick={() => setActiveTab("requests")} className={`px-3 py-1 rounded ${activeTab === "requests" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>회원 및 견적 관리</button>
+        <button onClick={() => setActiveTab("inquiries")} className={`px-3 py-1 rounded ${activeTab === "inquiries" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>고객 문의 관리</button>
+        <button onClick={() => setActiveTab("ops")} className={`px-3 py-1 rounded ${activeTab === "ops" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>승인/팝업/운영</button>
+        <button onClick={() => setActiveTab("stats")} className={`px-3 py-1 rounded ${activeTab === "stats" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>서비스 사용 현황</button>
+      </div>
 
-      <section className="bg-white border rounded-2xl p-5 space-y-3">
+      {activeTab === "ops" && <section className="bg-white border rounded-2xl p-5 space-y-3">
         <h2 className="text-xl font-bold">회원가입 승인 설정</h2>
         <p className="text-sm text-slate-500">현재 상태: {requireContractorApproval ? "ON (관리자 승인 필요)" : "OFF"}</p>
         <div className="flex items-center gap-2">
           <button onClick={() => updateContractorApprovalSetting(true)} className={`px-3 py-1 rounded-lg text-xs font-bold ${requireContractorApproval ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"}`}>ON</button>
           <button onClick={() => updateContractorApprovalSetting(false)} className={`px-3 py-1 rounded-lg text-xs font-bold ${!requireContractorApproval ? "bg-rose-600 text-white" : "bg-slate-100 text-slate-600"}`}>OFF</button>
         </div>
-      </section>
+      </section>}
 
-      <section className="bg-white border rounded-2xl p-5">
+      {activeTab === "requests" && <section className="bg-white border rounded-2xl p-5">
         <h2 className="text-xl font-bold mb-3">최근 요청 (상태 관리)</h2>
         <div className="flex items-center gap-2 mb-3">
-          <select value={bulkStatus} onChange={(e) => setBulkStatus(e.target.value)} className="border rounded px-2 py-1 text-sm">
+          <select value={reqStatusFilter} onChange={(e) => setReqStatusFilter(e.target.value)} className="border rounded px-2 py-1 text-sm">
+            <option value="ALL">전체 상태</option>
             {REQUEST_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
-          <button onClick={bulkUpdateRequests} className="px-3 py-1 rounded bg-indigo-600 text-white text-xs font-semibold">선택 항목 일괄 변경</button>
+          <input value={reqSearch} onChange={(e) => setReqSearch(e.target.value)} className="border rounded px-2 py-1 text-sm flex-1" placeholder="ID/의뢰인명/건물명/소재지/업체명 검색" />
+          <div className="ml-auto flex items-center gap-2">
+            <select value={bulkStatus} onChange={(e) => setBulkStatus(e.target.value)} className="border rounded px-2 py-1 text-sm">
+              {REQUEST_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <button onClick={bulkUpdateRequests} className="px-3 py-1 rounded bg-indigo-600 text-white text-xs font-semibold">상태 일괄변경 확정</button>
+            <button onClick={() => bulkRequestAction("hide")} className="px-3 py-1 rounded bg-amber-600 text-white text-xs font-semibold">비공개</button>
+            <button onClick={() => bulkRequestAction("delete")} className="px-3 py-1 rounded bg-rose-600 text-white text-xs font-semibold">삭제</button>
+          </div>
         </div>
         <div className="max-h-[520px] overflow-y-auto space-y-3 pr-1">
-          {requests.map((r: any) => (
+          {visibleRequests.map((r: any) => (
             <div key={r.repair_request_id} className="border rounded-xl p-3 flex items-center justify-between gap-2">
               <label className="flex items-center gap-2">
                 <input
@@ -235,13 +286,17 @@ export default function AdminPage() {
                 />
                 <span className="font-bold">{r.building_name || "건물명 미확인"}</span>
               </label>
-              <span className="text-xs text-slate-500">ID {r.repair_request_id} / {r.status}</span>
+              <span className="text-xs text-slate-500 text-right">
+                ID {r.repair_request_id} / {r.status} / {r.is_hidden ? "비공개" : "공개"}<br />
+                의뢰인: {r.requester_name || "-"} / 소재지: {r.region_summary || "-"}<br />
+                견적업체: {(r.bid_companies || []).join(", ") || "-"}
+              </span>
             </div>
           ))}
         </div>
-      </section>
+      </section>}
 
-      <section className="bg-white border rounded-2xl p-5 overflow-x-auto">
+      {activeTab === "inquiries" && <section className="bg-white border rounded-2xl p-5 overflow-x-auto">
         <h2 className="text-xl font-bold mb-4">고객 문의 (관리자)</h2>
         <table className="w-full text-sm min-w-[640px]">
           <thead><tr className="border-b bg-slate-50"><th className="py-2 px-2">상태</th><th className="py-2 px-2">제목</th><th className="py-2 px-2">작성자</th><th className="py-2 px-2">일시</th><th className="py-2 px-2">보기</th></tr></thead>
@@ -257,9 +312,9 @@ export default function AdminPage() {
             ))}
           </tbody>
         </table>
-      </section>
+      </section>}
 
-      <section className="bg-white border rounded-2xl p-5">
+      {activeTab === "requests" && <section className="bg-white border rounded-2xl p-5">
         <h2 className="text-xl font-bold mb-4">회원 관리 (Auth 연동)</h2>
         <div className="grid md:grid-cols-4 gap-2 mb-3">
           <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value as any)} className="border rounded px-2 py-2 text-sm">
@@ -302,9 +357,32 @@ export default function AdminPage() {
             </tbody>
           </table>
         </div>
-      </section>
+      </section>}
 
-      <section className="bg-white border rounded-2xl p-5 space-y-4">
+      {activeTab === "ops" && <section className="bg-white border rounded-2xl p-5 space-y-4">
+        <h2 className="text-xl font-bold">관리자 권한 부여(마스터 전용)</h2>
+        <div className="flex gap-2">
+          <input value={grantUserId} onChange={(e) => setGrantUserId(e.target.value)} className="border rounded px-3 py-2 text-sm flex-1" placeholder="관리자로 등록할 사용자 UUID" />
+          <button
+            onClick={async () => {
+              const res = await fetch(`${baseUrl}/api/admin/master/grant-admin`, {
+                method: "POST",
+                headers: authHeader(token),
+                body: JSON.stringify({ user_id: grantUserId }),
+              });
+              const json = await res.json();
+              if (!res.ok) return alert(json.detail || "권한 부여 실패");
+              alert("관리자 권한을 부여했습니다.");
+              setGrantUserId("");
+            }}
+            className="px-3 py-2 rounded bg-slate-900 text-white text-sm"
+          >
+            관리자 등록
+          </button>
+        </div>
+      </section>}
+
+      {activeTab === "ops" && <section className="bg-white border rounded-2xl p-5 space-y-4">
         <h2 className="text-xl font-bold">첫 화면 팝업 (알림 배포)</h2>
         <input value={popTitle} onChange={(e) => setPopTitle(e.target.value)} placeholder="제목 (선택)" className="w-full border rounded-lg px-3 py-2 text-sm" />
         <textarea value={popMessage} onChange={(e) => setPopMessage(e.target.value)} placeholder="팝업 본문" className="w-full border rounded-lg px-3 py-2 text-sm min-h-[100px]" />
@@ -316,14 +394,14 @@ export default function AdminPage() {
             </li>
           ))}
         </ul>
-      </section>
+      </section>}
 
-      <section className="grid md:grid-cols-3 gap-4">
+      {activeTab === "stats" && <section className="grid md:grid-cols-3 gap-4">
         <TrendCard title="일간 트렌드(30일)" items={trends.daily} />
         <TrendCard title="주간 트렌드(최근)" items={trends.weekly} />
         <TrendCard title="월간 트렌드(1년)" items={trends.monthly} />
-      </section>
-      <section className="bg-white border rounded-2xl p-5">
+      </section>}
+      {activeTab === "stats" && <section className="bg-white border rounded-2xl p-5">
         <h2 className="text-xl font-bold mb-3">관리자 작업 로그</h2>
         <div className="max-h-[320px] overflow-y-auto space-y-2">
           {actionLogs.map((x) => (
@@ -336,7 +414,7 @@ export default function AdminPage() {
             </div>
           ))}
         </div>
-      </section>
+      </section>}
     </div>
   );
 }

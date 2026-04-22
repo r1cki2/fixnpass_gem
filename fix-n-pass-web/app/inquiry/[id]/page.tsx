@@ -46,7 +46,6 @@ export default function InquiryDetailPage() {
   const [editingReplyId, setEditingReplyId] = useState<number | null>(null);
   const [editReplyBody, setEditReplyBody] = useState("");
   const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-  const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL;
 
   const load = async (t: string | null) => {
     try {
@@ -59,6 +58,7 @@ export default function InquiryDetailPage() {
       }
       const json = await res.json();
       setData(json.data);
+      setIsAdmin(Boolean(json.data?.is_admin_session));
     } catch {
       setData(null);
     } finally {
@@ -73,15 +73,13 @@ export default function InquiryDetailPage() {
       const { data } = await supabase.auth.getSession();
       if (cancelled) return;
       const t = data.session?.access_token ?? null;
-      const em = data.session?.user?.email?.toLowerCase();
       setToken(t);
-      setIsAdmin(Boolean(adminEmail && em === adminEmail.toLowerCase()));
       await load(t);
     })();
     return () => {
       cancelled = true;
     };
-  }, [id, baseUrl, adminEmail]);
+  }, [id, baseUrl]);
 
   const sendReply = async () => {
     setMsg("");

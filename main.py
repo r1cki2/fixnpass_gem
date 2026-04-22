@@ -44,6 +44,8 @@ SUPABASE_SERVICE_ROLE_KEY = (
 SUPABASE_SERVER_KEY = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVER_KEY)
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+MASTER_ADMIN_EMAIL = os.environ.get("MASTER_ADMIN_EMAIL", ADMIN_EMAIL).strip().lower()
+MASTER_ADMIN_PASSWORD = os.environ.get("MASTER_ADMIN_PASSWORD", "").strip()
 MAIL_SMTP_HOST = os.environ.get("MAIL_SMTP_HOST", "")
 MAIL_SMTP_PORT = int(os.environ.get("MAIL_SMTP_PORT", "587"))
 MAIL_SMTP_USER = os.environ.get("MAIL_SMTP_USER", "")
@@ -124,17 +126,47 @@ def _extract_bearer(authorization: Optional[str]) -> str:
 
 
 def _require_admin(authorization: Optional[str]) -> dict:
-    if not ADMIN_EMAIL:
-        raise HTTPException(status_code=500, detail="서버에 ADMIN_EMAIL 설정이 필요합니다.")
+    if not MASTER_ADMIN_EMAIL:
+        raise HTTPException(status_code=500, detail="서버에 MASTER_ADMIN_EMAIL(또는 ADMIN_EMAIL) 설정이 필요합니다.")
     token = _extract_bearer(authorization)
     user_res = supabase.auth.get_user(token)
     user = getattr(user_res, "user", None)
     if not user or not user.email:
         raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
     email = user.email.lower()
-    if email != ADMIN_EMAIL:
-        raise HTTPException(status_code=403, detail="관리자 권한이 없습니다.")
-    return {"id": user.id, "email": email}
+    if email == MASTER_ADMIN_EMAIL:
+        return {"id": user.id, "email": email, "is_master": True}
+    try:
+        ar = (
+            supabase.table("admin_roles")
+            .select("user_id")
+            .eq("user_id", user.id)
+            .limit(1)
+            .execute()
+        )
+        if ar.data:
+            return {"id": user.id, "email": email, "is_master": False}
+    except Exception:
+        pass
+    raise HTTPException(status_code=403, detail="관리자 권한이 없습니다.")
+
+
+def _bootstrap_master_admin():
+    if not (MASTER_ADMIN_EMAIL and MASTER_ADMIN_PASSWORD):
+        return
+    try:
+        users = supabase.auth.admin.list_users(page=1, per_page=1000)
+        entries = users if isinstance(users, list) else _unwrap_auth_user_list(users)
+        target_id = None
+        for u in entries:
+            ud = u if isinstance(u, dict) else (u.model_dump() if hasattr(u, "model_dump") else {})
+            if str((ud.get("email") or "")).lower() == MASTER_ADMIN_EMAIL:
+                target_id = ud.get("id")
+                break
+        if target_id:
+            supabase.auth.admin.update_user_by_id(target_id, {"password": MASTER_ADMIN_PASSWORD})
+    except Exception as e:
+        logging.warning("master admin bootstrap skipped: %s", str(e))
 
 
 def _require_authenticated_user(authorization: Optional[str]) -> dict:
@@ -189,6 +221,15 @@ class AdminUserBulkDeleteBody(BaseModel):
 class AdminBulkRequestStatusUpdate(BaseModel):
     request_ids: List[int]
     status: str
+
+
+class AdminGrantRoleBody(BaseModel):
+    user_id: str
+
+
+class AdminBulkRequestAction(BaseModel):
+    request_ids: List[int]
+    action: str  # hide | delete
 
 
 class InquiryCreate(BaseModel):
@@ -1119,6 +1160,8 @@ async def get_market_list(partner_id: str, request_status: Optional[str] = None,
                 continue
             market_data.append(r)
         return {"status": "success", "data": market_data}
+    except HTTPException as e:
+        raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1163,6 +1206,8 @@ async def get_market_detail(request_id: int, partner_id: str):
             data["my_bid_status"] = "타업체 선정됨"
         data["request_stage_kr"] = _request_stage_kr(data.get("status", ""))
         return {"status": "success", "data": data}
+    except HTTPException as e:
+        raise e
     except HTTPException as e:
         raise e
     except Exception as e:
@@ -1379,19 +1424,29 @@ async def public_site_announcement():
 
 @app.get("/api/inquiries")
 async def list_inquiries(authorization: Optional[str] = Header(default=None)):
-    res = (
+    mine: Optional[str] = None
+    is_admin = False
+    if authorization:
+        try:
+            mine = _require_authenticated_user(authorization)["id"]
+            try:
+                _require_admin(authorization)
+                is_admin = True
+            except Exception:
+                is_admin = False
+        except HTTPException:
+            mine = None
+    q = (
         supabase.table("inquiries")
         .select("id, title, created_at, author_id")
         .order("created_at", desc=True)
         .limit(100)
-        .execute()
     )
-    mine: Optional[str] = None
-    if authorization:
-        try:
-            mine = _require_authenticated_user(authorization)["id"]
-        except HTTPException:
-            mine = None
+    if not is_admin:
+        if not mine:
+            return {"status": "success", "data": []}
+        q = q.eq("author_id", mine)
+    res = q.execute()
     rows = res.data or []
     iids = [int(r["id"]) for r in rows]
     counts = _admin_reply_counts_by_inquiry(iids)
@@ -1436,6 +1491,8 @@ async def get_inquiry_detail(inquiry_id: int, authorization: Optional[str] = Hea
         except Exception:
             is_admin_session = False
     is_mine = bool(mine and row.get("author_id") == mine)
+    if not is_mine and not is_admin_session:
+        raise HTTPException(status_code=403, detail="본인 문의만 조회할 수 있습니다.")
     try:
         rep = (
             supabase.table("inquiry_replies")
@@ -1704,6 +1761,9 @@ def _unwrap_auth_user_list(resp) -> list:
     return []
 
 
+_bootstrap_master_admin()
+
+
 @app.get("/api/admin/auth-users")
 async def admin_list_auth_users(authorization: Optional[str] = Header(default=None)):
     _require_admin(authorization)
@@ -1931,6 +1991,110 @@ async def admin_overview(authorization: Optional[str] = Header(default=None)):
     }
 
 
+@app.get("/api/admin/requests")
+async def admin_requests(
+    authorization: Optional[str] = Header(default=None),
+    status: Optional[str] = None,
+    include_hidden: bool = True,
+):
+    _require_admin(authorization)
+    q = (
+        supabase.table("repair_requests")
+        .select(
+            "repair_request_id, status, created_at, building_name, region_summary, requester_id, "
+            "selected_bid_ids, quote_deadline_at, is_hidden"
+        )
+        .order("created_at", desc=True)
+        .limit(300)
+    )
+    if status and status != "ALL":
+        q = q.eq("status", status)
+    if not include_hidden:
+        q = q.eq("is_hidden", False)
+    reqs = q.execute().data or []
+    requester_ids = [r["requester_id"] for r in reqs if r.get("requester_id")]
+    req_ids = [r["repair_request_id"] for r in reqs]
+    prof_map = {}
+    bids_map = defaultdict(list)
+    if requester_ids:
+        pres = (
+            supabase.table("profiles")
+            .select("id, name, is_active")
+            .in_("id", requester_ids)
+            .execute()
+        )
+        prof_map = {p["id"]: p for p in (pres.data or [])}
+    if req_ids:
+        bres = (
+            supabase.table("bids")
+            .select("repair_request_id, bid_id, partner_id, bid_amount, profiles(company_name,name)")
+            .in_("repair_request_id", req_ids)
+            .execute()
+        )
+        for b in bres.data or []:
+            pn = ((b.get("profiles") or {}).get("company_name") or (b.get("profiles") or {}).get("name") or "").strip()
+            bids_map[b["repair_request_id"]].append(
+                {"bid_id": b.get("bid_id"), "partner_id": b.get("partner_id"), "company_name": pn, "bid_amount": b.get("bid_amount")}
+            )
+    out = []
+    for r in reqs:
+        rp = prof_map.get(r.get("requester_id"), {})
+        out.append(
+            {
+                **r,
+                "requester_name": rp.get("name"),
+                "requester_active": rp.get("is_active", True),
+                "bid_companies": [x.get("company_name") for x in bids_map.get(r["repair_request_id"], []) if x.get("company_name")],
+                "bids": bids_map.get(r["repair_request_id"], []),
+            }
+        )
+    return {"status": "success", "data": out}
+
+
+@app.post("/api/admin/requests/bulk-action")
+async def admin_bulk_requests_action(
+    body: AdminBulkRequestAction,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    ids = list(dict.fromkeys([int(x) for x in (body.request_ids or [])]))
+    if not ids:
+        raise HTTPException(status_code=400, detail="처리할 request_ids가 비어 있습니다.")
+    if body.action not in ["hide", "delete"]:
+        raise HTTPException(status_code=400, detail="action은 hide 또는 delete 여야 합니다.")
+    targets = (
+        supabase.table("repair_requests")
+        .select("repair_request_id, requester_id, original_pdf_path, masked_pdf_path")
+        .in_("repair_request_id", ids)
+        .execute()
+    ).data or []
+    deleted = 0
+    hidden = 0
+    for t in targets:
+        rid = t["repair_request_id"]
+        should_hide = body.action == "hide"
+        if body.action == "delete" and t.get("requester_id"):
+            p = _get_profile(t["requester_id"]) or {}
+            if not p.get("is_active", True):
+                should_hide = True
+        if should_hide:
+            supabase.table("repair_requests").update({"is_hidden": True}).eq("repair_request_id", rid).execute()
+            hidden += 1
+            continue
+        try:
+            if t.get("original_pdf_path"):
+                supabase.storage.from_(ORIGINAL_BUCKET).remove([t["original_pdf_path"]])
+            if t.get("masked_pdf_path"):
+                supabase.storage.from_(MASKED_BUCKET).remove([t["masked_pdf_path"]])
+        except Exception:
+            pass
+        supabase.table("bids").delete().eq("repair_request_id", rid).execute()
+        supabase.table("repair_requests").delete().eq("repair_request_id", rid).execute()
+        deleted += 1
+    _log_admin_action("bulk_request_action", admin["email"], {"action": body.action, "count": len(ids), "deleted": deleted, "hidden": hidden})
+    return {"status": "success", "data": {"requested": len(ids), "deleted": deleted, "hidden": hidden}}
+
+
 @app.get("/api/admin/users")
 async def admin_users(authorization: Optional[str] = Header(default=None)):
     _require_admin(authorization)
@@ -1968,6 +2132,22 @@ async def admin_update_user_role(
         raise HTTPException(status_code=400, detail="role 값이 잘못되었습니다.")
     supabase.table("profiles").update({"role": body.role}).eq("id", user_id).execute()
     _log_admin_action("update_user_role", admin["email"], {"user_id": user_id, "role": body.role})
+    return {"status": "success"}
+
+
+@app.post("/api/admin/master/grant-admin")
+async def admin_master_grant_admin(
+    body: AdminGrantRoleBody,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    if not admin.get("is_master"):
+        raise HTTPException(status_code=403, detail="마스터 관리자만 권한을 부여할 수 있습니다.")
+    uid = body.user_id.strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="user_id가 필요합니다.")
+    supabase.table("admin_roles").upsert({"user_id": uid, "granted_by": admin["email"]}).execute()
+    _log_admin_action("grant_admin_role", admin["email"], {"user_id": uid})
     return {"status": "success"}
 
 

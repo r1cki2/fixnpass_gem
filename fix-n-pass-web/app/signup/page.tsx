@@ -15,13 +15,6 @@ import {
   validateOfficePhoneNumber,
 } from "@/lib/validation";
 
-function formatKoreanMobile(value: string) {
-  const digits = normalizeDigits(value).slice(0, 11);
-  if (digits.length <= 3) return digits;
-  if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
-  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
-}
-
 export default function SignupPage() {
   const router = useRouter();
   const [role, setRole] = useState<"requester" | "contractor" | "">("");
@@ -29,9 +22,14 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [name, setName] = useState("");
-  const [phoneNumber, setPhoneNumber] = useState("");
-  const [officePhoneNumber, setOfficePhoneNumber] = useState("");
+  const [mobile1, setMobile1] = useState("010");
+  const [mobile2, setMobile2] = useState("");
+  const [mobile3, setMobile3] = useState("");
+  const [office1, setOffice1] = useState("");
+  const [office2, setOffice2] = useState("");
+  const [office3, setOffice3] = useState("");
   const [requesterAddress, setRequesterAddress] = useState("");
+  const [requesterAddressDetail, setRequesterAddressDetail] = useState("");
   const [buildingRole, setBuildingRole] = useState<"owner" | "manager" | "">("");
   const [companyName, setCompanyName] = useState("");
   const [region, setRegion] = useState("");
@@ -68,6 +66,8 @@ export default function SignupPage() {
 
     setIsLoading(true);
     setMessage("");
+    const phoneNumber = `${mobile1}-${mobile2}-${mobile3}`;
+    const officePhoneNumber = [office1, office2, office3].filter(Boolean).join("-");
     const mobileErr = validateMobileNumber(phoneNumber);
     if (mobileErr) {
       setMessage(mobileErr);
@@ -128,6 +128,7 @@ export default function SignupPage() {
           office_phone_number: cleanOfficePhone || null,
           building_role: role === "requester" ? buildingRole : null,
           requester_address: role === "requester" ? requesterAddress.trim() : null,
+          requester_address_detail: role === "requester" ? requesterAddressDetail.trim() : null,
           company_name: role === "contractor" ? companyName.trim() : null,
           region: role === "contractor" ? region.trim() : null,
           verification_status: "pending",
@@ -178,6 +179,7 @@ export default function SignupPage() {
       await supabase.auth.updateUser({
         data: {
           requester_address: requesterAddress.trim(),
+          requester_address_detail: requesterAddressDetail.trim(),
           building_role: buildingRole,
         },
       });
@@ -238,28 +240,20 @@ export default function SignupPage() {
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">휴대폰 번호</label>
-          <input
-            type="tel"
-            inputMode="numeric"
-            autoComplete="tel"
-            value={phoneNumber}
-            onChange={(e) => setPhoneNumber(formatKoreanMobile(e.target.value))}
-            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="010-1234-5678"
-            maxLength={13}
-            required
-          />
+          <div className="grid grid-cols-[80px_1fr_1fr] gap-2 items-center">
+            <input value={mobile1} onChange={(e) => setMobile1(normalizeDigits(e.target.value).slice(0, 3))} className="px-3 py-3 border border-gray-300 rounded-lg" />
+            <input value={mobile2} onChange={(e) => setMobile2(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" />
+            <input value={mobile3} onChange={(e) => setMobile3(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" />
+          </div>
           <p className="text-xs text-gray-500 mt-1">010으로 시작하는 11자리 번호만 입력됩니다.</p>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">사무실 전화번호 (선택)</label>
-          <input
-            type="tel"
-            value={officePhoneNumber}
-            onChange={(e) => setOfficePhoneNumber(e.target.value)}
-            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="예: 02-123-4567"
-          />
+          <div className="grid grid-cols-3 gap-2">
+            <input value={office1} onChange={(e) => setOffice1(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" placeholder="02" />
+            <input value={office2} onChange={(e) => setOffice2(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" placeholder="1234" />
+            <input value={office3} onChange={(e) => setOffice3(normalizeDigits(e.target.value).slice(0, 4))} className="px-3 py-3 border border-gray-300 rounded-lg" placeholder="5678" />
+          </div>
         </div>
 
         {role === "requester" && (
@@ -282,6 +276,15 @@ export default function SignupPage() {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">건물 소재지</label>
               <AddressSearchInput value={requesterAddress} onChange={setRequesterAddress} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">상세주소 (선택)</label>
+              <input
+                value={requesterAddressDetail}
+                onChange={(e) => setRequesterAddressDetail(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg"
+                placeholder="동/호수 등"
+              />
             </div>
           </>
         )}

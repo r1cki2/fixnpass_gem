@@ -14,6 +14,7 @@ export default function ContractorMarketPage() {
   const [regionFilter, setRegionFilter] = useState<string>("ALL");
   const [requestStatusFilter, setRequestStatusFilter] = useState<string>("ALL");
   const [myStatusFilter, setMyStatusFilter] = useState<string>("ALL");
+  const [inactiveNotice, setInactiveNotice] = useState("");
 
   useEffect(() => {
     const checkAccess = async () => {
@@ -29,7 +30,7 @@ export default function ContractorMarketPage() {
       // 2. DB(profiles 테이블)에서 해당 유저의 역할(role) 조회
       const { data: profile, error } = await supabase
         .from("profiles")
-        .select("role")
+        .select("role,is_active")
         .eq("id", session.user.id)
         .single();
 
@@ -45,6 +46,9 @@ export default function ContractorMarketPage() {
         router.replace("/"); // 의뢰인 홈으로 강제 이동
         return;
       }
+      if (profile.is_active === false) {
+        setInactiveNotice("관리자 승인 후 관심 지역의 견적 요청을 확인하실 수 있습니다. 조금만 기다려주세요.");
+      }
 
       // 4. 모든 보안 검사 통과 시 화면 렌더링 허용
       setIsAuthorized(true);
@@ -53,9 +57,18 @@ export default function ContractorMarketPage() {
         fetch(`${baseUrl}/api/contractor/market?partner_id=${session.user.id}&request_status=${encodeURIComponent(requestStatusFilter)}&my_status_filter=${encodeURIComponent(myStatusFilter)}`),
         fetch(`${baseUrl}/api/me/profile?user_id=${session.user.id}`),
       ]);
-      const marketJson = await marketRes.json();
+      const marketJson = await marketRes.json().catch(() => ({} as any));
+      if (!marketRes.ok) {
+        if (marketRes.status === 403) {
+          setInactiveNotice(marketJson.detail || "관리자 승인 후 관심 지역의 견적 요청을 확인하실 수 있습니다. 조금만 기다려주세요.");
+          setRequests([]);
+        } else {
+          alert(marketJson.detail || "요청 정보를 불러오지 못했습니다.");
+        }
+      } else {
+        setRequests(marketJson.data || []);
+      }
       const myJson = await myRes.json();
-      setRequests(marketJson.data || []);
       const regions = myJson?.data?.partner_profile?.service_regions;
       if (Array.isArray(regions)) setServiceRegions(regions);
       setIsLoading(false);
@@ -94,6 +107,11 @@ export default function ContractorMarketPage() {
         제출하신 견적이 선택될 경우 연락처, 주소 등 상세 정보가 공개됩니다.
       </p>
       <div className="mb-5 bg-white border rounded-xl p-4">
+        {inactiveNotice && (
+          <div className="mb-3 text-sm rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
+            {inactiveNotice}
+          </div>
+        )}
         <p className="text-xs text-slate-500 mb-2">내 관심 지역</p>
         <div className="flex flex-wrap gap-2 mb-3">
           {serviceRegions.length === 0 && <span className="text-sm text-slate-400">미등록</span>}
@@ -164,6 +182,14 @@ export default function ContractorMarketPage() {
               {req.quote_deadline_at
                 ? new Date(req.quote_deadline_at).toLocaleDateString("ko-KR")
                 : "-"}
+              {req.quote_deadline_at && (
+                <span className="ml-2 font-bold text-rose-600">
+                  {(() => {
+                    const d = Math.ceil((new Date(req.quote_deadline_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                    return d >= 0 ? `D-${d}` : `D+${Math.abs(d)}`;
+                  })()}
+                </span>
+              )}
             </p>
             <p className="text-xs text-slate-500 mb-2">
               내 견적 등록일:{" "}
