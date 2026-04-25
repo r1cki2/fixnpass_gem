@@ -45,7 +45,7 @@ function LoginForm() {
         return;
       }
       if (pending.error && !pending.skipped) {
-        alert(`이전 견적 요청 연동에 실패했습니다: ${pending.error}`);
+        alert(pending.error);
       }
     }
 

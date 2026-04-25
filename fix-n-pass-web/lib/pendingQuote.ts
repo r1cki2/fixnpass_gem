@@ -45,6 +45,35 @@ export async function submitPendingQuoteRequest(userId: string): Promise<{
   const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
   if (!baseUrl) return { ok: false, error: "API 주소가 설정되지 않았습니다." };
 
+  // 수리업체 계정으로 로그인한 경우: 임시 draft 건 삭제 후 안내
+  try {
+    const profileRes = await fetch(`${baseUrl}/api/me/profile?user_id=${encodeURIComponent(userId)}`);
+    const profileJson = await profileRes.json().catch(() => ({} as any));
+    const role = profileJson?.data?.profile?.role;
+    if (role === "contractor") {
+      try {
+        await fetch(`${baseUrl}/api/pending-quote/discard-draft`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            repair_request_id: p.repair_request_id,
+            user_id: userId,
+          }),
+        });
+      } catch {
+        /* ignore cleanup error */
+      }
+      clearPendingQuoteRequest();
+      return {
+        ok: false,
+        error:
+          "수리 업체 계정은 견적을 요청하실 수 없습니다. 수리 의뢰인 계정으로 회원가입 하신 후 재요청 부탁드립니다.",
+      };
+    }
+  } catch {
+    /* ignore profile read failure and continue */
+  }
+
   const res = await fetch(`${baseUrl}/api/update-request`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

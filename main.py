@@ -193,6 +193,11 @@ class UpdateRequest(BaseModel):
     status: str = "requested"
 
 
+class PendingDraftCleanupBody(BaseModel):
+    repair_request_id: int
+    user_id: str
+
+
 class BidSubmission(BaseModel):
     repair_request_id: int
     partner_id: str
@@ -643,6 +648,7 @@ def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict, extra_sensitive_
 
     for page in doc:
         mask_count = 0
+        mask_count += _mask_tabular_sensitive_fields(page)
         for term in sensitive_terms:
             for rect in page.search_for(term):
                 page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
@@ -705,6 +711,63 @@ def _collect_sensitive_from_lines(full_text: str) -> list[str]:
         if len(t) >= 2:
             out.append(t)
     return [x for x in out if x]
+
+
+def _mask_tabular_sensitive_fields(page: fitz.Page) -> int:
+    words = page.get_text("words") or []
+    if not words:
+        return 0
+    markers = ["주소", "소재지", "건물명", "관리자", "연락처", "인증번호", "보수사", "검사자"]
+    rows: dict[float, list] = defaultdict(list)
+    for w in words:
+        x0, y0, x1, y1 = w[0], w[1], w[2], w[3]
+        row_key = round(((y0 + y1) / 2) / 4) * 4.0
+        rows[row_key].append(w)
+
+    center_x = page.rect.width / 2
+    total = 0
+    prev_left_sensitive = False
+    prev_right_sensitive = False
+
+    def split_label_value(side_words: list):
+        if not side_words:
+            return "", []
+        side_words = sorted(side_words, key=lambda x: x[0])
+        label_words = [side_words[0]]
+        value_words: list = []
+        for i in range(1, len(side_words)):
+            prev = side_words[i - 1]
+            cur = side_words[i]
+            if (cur[0] - prev[2]) >= 14 and not value_words:
+                value_words = side_words[i:]
+                break
+            label_words.append(cur)
+        label = re.sub(r"\s+", "", "".join(str(x[4]) for x in label_words))
+        return label, value_words
+
+    for row_key in sorted(rows.keys()):
+        row_words = sorted(rows[row_key], key=lambda x: x[0])
+        left_words = [w for w in row_words if w[0] < center_x]
+        right_words = [w for w in row_words if w[0] >= center_x]
+
+        left_label, left_values = split_label_value(left_words)
+        right_label, right_values = split_label_value(right_words)
+
+        left_sensitive = any(m in left_label for m in markers) or (prev_left_sensitive and bool(left_values))
+        right_sensitive = any(m in right_label for m in markers) or (prev_right_sensitive and bool(right_values))
+
+        if left_sensitive:
+            for w in left_values:
+                page.draw_rect(fitz.Rect(w[0], w[1], w[2], w[3]), color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+                total += 1
+        if right_sensitive:
+            for w in right_values:
+                page.draw_rect(fitz.Rect(w[0], w[1], w[2], w[3]), color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+                total += 1
+
+        prev_left_sensitive = left_sensitive
+        prev_right_sensitive = right_sensitive
+    return total
 
 
 async def _extract_doc_signature(text: str, label: str) -> dict:
@@ -1119,6 +1182,46 @@ async def update_request(req: UpdateRequest):
                     f"원본오류: {str(e)}"
                 ),
             )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pending-quote/discard-draft")
+async def discard_pending_quote_draft(body: PendingDraftCleanupBody):
+    try:
+        profile = _get_profile(body.user_id)
+        if not profile or profile.get("role") != "contractor":
+            raise HTTPException(status_code=403, detail="수리업체만 접근할 수 있습니다.")
+        req_res = (
+            supabase.table("repair_requests")
+            .select("repair_request_id, status, requester_id, original_pdf_path, masked_pdf_path")
+            .eq("repair_request_id", body.repair_request_id)
+            .limit(1)
+            .execute()
+        )
+        if not req_res.data:
+            return {"status": "success", "deleted": False}
+        req_row = req_res.data[0]
+        if req_row.get("status") != "draft":
+            return {"status": "success", "deleted": False}
+        # 게스트 분석 임시건만 삭제 허용
+        if req_row.get("requester_id"):
+            return {"status": "success", "deleted": False}
+        try:
+            if req_row.get("original_pdf_path"):
+                supabase.storage.from_(ORIGINAL_BUCKET).remove([req_row["original_pdf_path"]])
+        except Exception:
+            pass
+        try:
+            if req_row.get("masked_pdf_path"):
+                supabase.storage.from_(MASKED_BUCKET).remove([req_row["masked_pdf_path"]])
+        except Exception:
+            pass
+        supabase.table("bids").delete().eq("repair_request_id", body.repair_request_id).execute()
+        supabase.table("repair_requests").delete().eq("repair_request_id", body.repair_request_id).execute()
+        return {"status": "success", "deleted": True}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
