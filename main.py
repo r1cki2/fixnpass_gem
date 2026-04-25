@@ -637,6 +637,9 @@ def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict, extra_sensitive_
     ]
     if extra_sensitive_terms:
         sensitive_terms.extend(extra_sensitive_terms)
+    # 비주얼브리핑 일반사항 라벨-값 기반 마스킹(라벨은 유지, 값만 마스킹)
+    sensitive_terms.extend(_extract_general_section_sensitive_terms(full_text))
+    # 종합의견서/기타 레이아웃 대응용 보수적 라인 기반 보조 마스킹
     sensitive_terms.extend(_collect_sensitive_from_lines(full_text))
     # 텍스트에서 직접 추출 가능한 식별 패턴 마스킹
     sensitive_terms += re.findall(r"\b01[0-9][-\s]?\d{3,4}[-\s]?\d{4}\b", full_text)
@@ -648,7 +651,6 @@ def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict, extra_sensitive_
 
     for page in doc:
         mask_count = 0
-        mask_count += _mask_tabular_sensitive_fields(page)
         for term in sensitive_terms:
             for rect in page.search_for(term):
                 page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
@@ -713,61 +715,68 @@ def _collect_sensitive_from_lines(full_text: str) -> list[str]:
     return [x for x in out if x]
 
 
-def _mask_tabular_sensitive_fields(page: fitz.Page) -> int:
-    words = page.get_text("words") or []
-    if not words:
-        return 0
-    markers = ["주소", "소재지", "건물명", "관리자", "연락처", "인증번호", "보수사", "검사자"]
-    rows: dict[float, list] = defaultdict(list)
-    for w in words:
-        x0, y0, x1, y1 = w[0], w[1], w[2], w[3]
-        row_key = round(((y0 + y1) / 2) / 4) * 4.0
-        rows[row_key].append(w)
+def _extract_general_section_sensitive_terms(full_text: str) -> list[str]:
+    """
+    비주얼브리핑의 `1. 일반사항` 구간에서 라벨-값 형태를 파싱해
+    민감 값(라벨은 제외)만 추출한다.
+    """
+    text = full_text or ""
+    start = text.find("1. 일반사항")
+    if start < 0:
+        return []
+    end = text.find("2. 이미지파일", start)
+    section = text[start:end] if end > start else text[start:]
+    raw_lines = [ln.strip() for ln in section.splitlines() if ln.strip()]
+    if not raw_lines:
+        return []
 
-    center_x = page.rect.width / 2
-    total = 0
-    prev_left_sensitive = False
-    prev_right_sensitive = False
+    labels = {
+        "주소",
+        "소재지",
+        "건물명",
+        "관리자",
+        "연락처",
+        "인증번호",
+        "보수사",
+        "검사자",
+        "관리자성명",
+        "검사자성명",
+    }
+    all_known_labels = labels | {
+        "종류및방식",
+        "제작사",
+        "검사일자",
+        "승강기대수",
+    }
 
-    def split_label_value(side_words: list):
-        if not side_words:
-            return "", []
-        side_words = sorted(side_words, key=lambda x: x[0])
-        label_words = [side_words[0]]
-        value_words: list = []
-        for i in range(1, len(side_words)):
-            prev = side_words[i - 1]
-            cur = side_words[i]
-            if (cur[0] - prev[2]) >= 14 and not value_words:
-                value_words = side_words[i:]
-                break
-            label_words.append(cur)
-        label = re.sub(r"\s+", "", "".join(str(x[4]) for x in label_words))
-        return label, value_words
+    values: list[str] = []
+    current_label: Optional[str] = None
+    current_value_lines: list[str] = []
 
-    for row_key in sorted(rows.keys()):
-        row_words = sorted(rows[row_key], key=lambda x: x[0])
-        left_words = [w for w in row_words if w[0] < center_x]
-        right_words = [w for w in row_words if w[0] >= center_x]
+    def flush():
+        nonlocal current_label, current_value_lines
+        if current_label in labels and current_value_lines:
+            values.extend(current_value_lines)
+        current_label = None
+        current_value_lines = []
 
-        left_label, left_values = split_label_value(left_words)
-        right_label, right_values = split_label_value(right_words)
+    for line in raw_lines:
+        normalized = re.sub(r"\s+", "", line)
+        if normalized in all_known_labels:
+            flush()
+            current_label = normalized
+            continue
+        if current_label:
+            current_value_lines.append(line)
+    flush()
 
-        left_sensitive = any(m in left_label for m in markers) or (prev_left_sensitive and bool(left_values))
-        right_sensitive = any(m in right_label for m in markers) or (prev_right_sensitive and bool(right_values))
-
-        if left_sensitive:
-            for w in left_values:
-                page.draw_rect(fitz.Rect(w[0], w[1], w[2], w[3]), color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
-                total += 1
-        if right_sensitive:
-            for w in right_values:
-                page.draw_rect(fitz.Rect(w[0], w[1], w[2], w[3]), color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
-                total += 1
-
-        prev_left_sensitive = left_sensitive
-        prev_right_sensitive = right_sensitive
-    return total
+    expanded = list(values)
+    for v in values:
+        for token in re.split(r"[\s,()/\-]+", v):
+            t = token.strip()
+            if len(t) >= 2:
+                expanded.append(t)
+    return [x for x in expanded if x]
 
 
 async def _extract_doc_signature(text: str, label: str) -> dict:
