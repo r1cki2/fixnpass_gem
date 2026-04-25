@@ -650,11 +650,13 @@ def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict, extra_sensitive_
     sensitive_terms = list(dict.fromkeys(sensitive_terms))
 
     for page in doc:
-        mask_count = 0
+        redaction_count = 0
         for term in sensitive_terms:
             for rect in page.search_for(term):
-                page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
-                mask_count += 1
+                page.add_redact_annot(rect, fill=(1, 1, 1))
+                redaction_count += 1
+        if redaction_count > 0:
+            page.apply_redactions()
 
     pdf_bytes = doc.tobytes()
     doc.close()
