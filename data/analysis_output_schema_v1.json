@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FixnPassAnalysisOutputV1",
+  "type": "object",
+  "required": [
+    "documents",
+    "site_info",
+    "mandatory_repairs",
+    "optional_repairs",
+    "reference_notes",
+    "redaction_summary"
+  ],
+  "properties": {
+    "documents": {
+      "type": "object",
+      "required": ["has_comprehensive", "has_visual"],
+      "properties": {
+        "has_comprehensive": { "type": "boolean" },
+        "has_visual": { "type": "boolean" }
+      }
+    },
+    "site_info": {
+      "type": "object",
+      "required": ["address", "parking"],
+      "properties": {
+        "address": {
+          "type": "object",
+          "required": ["building_name", "region_summary", "address_detail"],
+          "properties": {
+            "building_name": { "type": "string" },
+            "region_summary": { "type": "string" },
+            "address_detail": { "type": "string" }
+          }
+        },
+        "parking": {
+          "type": "object",
+          "required": ["parking_type", "manufacturer"],
+          "properties": {
+            "parking_type": { "type": "string" },
+            "manufacturer": { "type": "string" }
+          }
+        }
+      }
+    },
+    "mandatory_repairs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/repairItem" }
+    },
+    "optional_repairs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/repairItem" }
+    },
+    "reference_notes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/referenceNote" }
+    },
+    "redaction_summary": {
+      "type": "object",
+      "required": ["targets", "reason"],
+      "properties": {
+        "targets": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "reason": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "repairItem": {
+      "type": "object",
+      "required": ["item", "reason", "source_pages", "source_document"],
+      "properties": {
+        "item": { "type": "string" },
+        "reason": { "type": "string" },
+        "source_pages": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "source_document": { "type": "string" },
+        "guide_comment": { "type": ["string", "null"] },
+        "matched_alias": { "type": ["string", "null"] }
+      }
+    },
+    "referenceNote": {
+      "type": "object",
+      "required": ["note", "reason", "source_pages", "source_document"],
+      "properties": {
+        "note": { "type": "string" },
+        "reason": { "type": "string" },
+        "source_pages": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "source_document": { "type": "string" }
+      }
+    }
+  }
+}

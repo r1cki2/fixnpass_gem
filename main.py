@@ -1,5 +1,6 @@
 import functools
 import asyncio
+import csv
 import json
 import logging
 import smtplib
@@ -11,6 +12,7 @@ import tempfile
 import uuid
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
+from pathlib import Path
 from typing import List, Optional
 
 import fitz
@@ -64,6 +66,9 @@ GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 )
+BASE_DIR = Path(__file__).resolve().parent
+ANALYSIS_RULES_PATH = BASE_DIR / "prompts" / "analysis_rules_v1.md"
+GUIDE_CSV_PATH = BASE_DIR / "data" / "fixnpass_gem_analysis_mandatory_classify.csv"
 
 
 def _key_kind(key: Optional[str]) -> str:
@@ -425,6 +430,69 @@ def _request_stage_kr(status: str) -> str:
     return mapping.get(status, status)
 
 
+def _load_analysis_rules_text() -> str:
+    try:
+        return ANALYSIS_RULES_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+@functools.lru_cache(maxsize=1)
+def _load_guide_rows() -> list[dict]:
+    rows = []
+    if not GUIDE_CSV_PATH.exists():
+        return rows
+    try:
+        with GUIDE_CSV_PATH.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                aliases = []
+                for i in range(1, 8):
+                    v = (r.get(f"부적합 항목명{i}") or "").strip()
+                    if v:
+                        aliases.append(v)
+                comment = (r.get("가이드 코멘트") or "").strip()
+                if aliases and comment:
+                    rows.append({"aliases": aliases, "guide_comment": comment})
+    except Exception:
+        return []
+    return rows
+
+
+def _match_guide_comment(item: str) -> dict:
+    t = re.sub(r"\s+", "", (item or "").lower())
+    if not t:
+        return {"guide_comment": None, "matched_alias": None}
+    for row in _load_guide_rows():
+        for alias in row["aliases"]:
+            a = re.sub(r"\s+", "", alias.lower())
+            if a and (a in t or t in a):
+                return {"guide_comment": row["guide_comment"], "matched_alias": alias}
+    return {"guide_comment": None, "matched_alias": None}
+
+
+def _clean_text(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip()
+
+
+def _pdf_pages_text(pdf_bytes: bytes) -> list[str]:
+    d = fitz.open(stream=pdf_bytes, filetype="pdf")
+    out = [d.load_page(i).get_text() or "" for i in range(len(d))]
+    d.close()
+    return out
+
+
+def _pdf_concat(pdf_list: list[bytes]) -> bytes:
+    dst = fitz.open()
+    for b in pdf_list:
+        src = fitz.open(stream=b, filetype="pdf")
+        dst.insert_pdf(src)
+        src.close()
+    out = dst.tobytes()
+    dst.close()
+    return out
+
+
 def _send_mail(to_email: str, subject: str, body: str):
     if not (MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS):
         raise RuntimeError("SMTP env is not configured")
@@ -526,7 +594,7 @@ def _enqueue_and_maybe_send(event_type: str, user_id: str, payload: dict):
         logging.warning("immediate mail send failed: %s", str(e))
 
 
-def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict) -> bytes:
+def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict, extra_sensitive_terms: Optional[list[str]] = None) -> bytes:
     """
     원본 PDF 레이아웃/사진은 유지하고, 민감 텍스트만 가린 업체용 PDF를 생성한다.
     """
@@ -535,14 +603,27 @@ def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict) -> bytes:
     for p in doc:
         full_text += p.get_text() + "\n"
 
+    site_info = ai_data.get("site_info", {}) or {}
+    address_info = site_info.get("address", {}) if isinstance(site_info, dict) else {}
+    parking_info = site_info.get("parking", {}) if isinstance(site_info, dict) else {}
+
     sensitive_terms = [
         str(ai_data.get("building_name", "")).strip(),
         str(ai_data.get("region_summary", "")).strip(),
         str(ai_data.get("address_detail", "")).strip(),
+        str(address_info.get("building_name", "")).strip(),
+        str(address_info.get("region_summary", "")).strip(),
+        str(address_info.get("address_detail", "")).strip(),
+        str(parking_info.get("parking_type", "")).strip(),
+        str(parking_info.get("manufacturer", "")).strip(),
     ]
-    # 텍스트에서 직접 추출 가능한 개인정보 패턴도 함께 마스킹
+    if extra_sensitive_terms:
+        sensitive_terms.extend(extra_sensitive_terms)
+    # 텍스트에서 직접 추출 가능한 식별 패턴 마스킹
     sensitive_terms += re.findall(r"\b01[0-9][-\s]?\d{3,4}[-\s]?\d{4}\b", full_text)
+    sensitive_terms += re.findall(r"\b0\d{1,2}[-\s]?\d{3,4}[-\s]?\d{4}\b", full_text)
     sensitive_terms += re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", full_text)
+    sensitive_terms += re.findall(r"\b\d{6}[-\s]?\d{7}\b", full_text)
     sensitive_terms = [t for t in sensitive_terms if t and len(t) >= 2]
     sensitive_terms = list(dict.fromkeys(sensitive_terms))
 
@@ -560,8 +641,92 @@ def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict) -> bytes:
     return pdf_bytes
 
 
+def _classify_report_kind(text: str) -> str:
+    t = re.sub(r"\s+", "", (text or "")).lower()
+    has_comprehensive = "종합의견서" in t
+    has_visual = ("검사결과의견" in t and "이미지파일" in t) or ("비주얼브리핑" in t)
+    if has_comprehensive and has_visual:
+        return "combined"
+    if has_comprehensive:
+        return "comprehensive"
+    if has_visual:
+        return "visual"
+    return "unknown"
+
+
+def _split_comprehensive_before_wire(pdf_bytes: bytes) -> bytes:
+    src = fitz.open(stream=pdf_bytes, filetype="pdf")
+    keep_until = len(src)
+    for i in range(len(src)):
+        page_text = src.load_page(i).get_text() or ""
+        if "와이어로프 테스터 측정 결과" in page_text or "와이어로프테스터측정결과" in re.sub(r"\s+", "", page_text):
+            keep_until = i
+            break
+    out = fitz.open()
+    if keep_until <= 0:
+        out.insert_pdf(src, from_page=0, to_page=0)
+    else:
+        out.insert_pdf(src, from_page=0, to_page=max(0, keep_until - 1))
+    b = out.tobytes()
+    out.close()
+    src.close()
+    return b
+
+
+def _safe_dict(obj) -> dict:
+    return obj if isinstance(obj, dict) else {}
+
+
+def _extract_with_llm(comprehensive_text: str, visual_text: str) -> dict:
+    rules = _load_analysis_rules_text()
+    prompt = f"""
+다음은 기계식 주차장 검사 문서 분석 작업입니다.
+아래 규칙을 가능한 한 준수하되, 응답은 반드시 순수 JSON 객체 하나로만 반환하세요.
+
+[규칙]
+{rules[:14000]}
+
+[출력 JSON 스키마]
+{{
+  "site_info": {{
+    "address": {{
+      "building_name": "string",
+      "region_summary": "string",
+      "address_detail": "string"
+    }},
+    "parking": {{
+      "parking_type": "string",
+      "manufacturer": "string"
+    }}
+  }},
+  "mandatory_repairs": [{{"item":"string","reason":"string","source_pages":[1],"source_document":"종합의견서|비주얼브리핑"}}],
+  "optional_repairs": [{{"item":"string","reason":"string","source_pages":[1],"source_document":"종합의견서|비주얼브리핑"}}],
+  "reference_notes": [{{"note":"string","reason":"string","source_pages":[1],"source_document":"종합의견서|비주얼브리핑"}}],
+  "redaction_summary": {{"targets":["string"],"reason":"string"}},
+  "documents": {{"has_comprehensive": true, "has_visual": true}}
+}}
+
+[종합의견서 텍스트]
+{comprehensive_text[:22000]}
+
+[비주얼브리핑 텍스트]
+{visual_text[:22000]}
+"""
+    res_json = asyncio.get_event_loop().run_until_complete(
+        _post_gemini_with_retry({"contents": [{"parts": [{"text": prompt}]}]})
+    )
+    ai_raw = res_json["candidates"][0]["content"]["parts"][0]["text"]
+    if "```" in ai_raw:
+        ai_raw = ai_raw.split("```")[1].replace("json", "").strip().split("```")[0].strip()
+    return json.loads(ai_raw)
+
+
 @app.post("/api/upload-pdf")
-async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File(...)):
+async def upload_pdf(
+    requester_id: Optional[str] = None,
+    file: Optional[UploadFile] = File(None),
+    files: Optional[List[UploadFile]] = File(None),
+):
     _rate_limit("upload_pdf", requester_id or "guest")
     if requester_id:
         _require_active_role(requester_id, ["requester"], "requester")
@@ -569,35 +734,100 @@ async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File
     owner_key = requester_id or "guest"
     original_path = f"requester/{owner_key}/{req_token}/original.pdf"
     masked_path = f"request/{req_token}/masked.pdf"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        file_bytes = await file.read()
-        tmp.write(file_bytes)
-        tmp_path = tmp.name
+    upload_files = [f for f in (files or []) if f is not None]
+    if file:
+        upload_files.append(file)
+    if not upload_files:
+        raise HTTPException(status_code=400, detail="PDF 파일을 1개 또는 2개 업로드해주세요.")
+    if len(upload_files) > 2:
+        raise HTTPException(status_code=400, detail="PDF는 최대 2개까지 업로드할 수 있습니다.")
 
+    pdf_payloads: list[tuple[str, bytes]] = []
+    for f in upload_files:
+        b = await f.read()
+        if not b:
+            continue
+        pdf_payloads.append((f.filename or "upload.pdf", b))
+    if not pdf_payloads:
+        raise HTTPException(status_code=400, detail="유효한 PDF 파일을 찾을 수 없습니다.")
     try:
-        # 1) 원본은 private 버킷에 저장 (public URL 금지)
+        comprehensive_bytes: Optional[bytes] = None
+        visual_bytes: Optional[bytes] = None
+        full_input_bytes: list[bytes] = []
+        for _, pdf_bytes in pdf_payloads:
+            full_input_bytes.append(pdf_bytes)
+            page_texts = _pdf_pages_text(pdf_bytes)
+            joined = "\n".join(page_texts[:6])
+            kind = _classify_report_kind(joined)
+            if kind == "combined":
+                comprehensive_bytes = _split_comprehensive_before_wire(pdf_bytes)
+                visual_bytes = pdf_bytes
+            elif kind == "comprehensive":
+                comprehensive_bytes = pdf_bytes
+            elif kind == "visual":
+                visual_bytes = pdf_bytes
+
+        if not comprehensive_bytes and not visual_bytes and len(pdf_payloads) == 1:
+            one_text = "\n".join(_pdf_pages_text(pdf_payloads[0][1])[:8])
+            kind = _classify_report_kind(one_text)
+            if kind == "unknown":
+                raise HTTPException(
+                    status_code=400,
+                    detail="업로드한 PDF에서 종합의견서/비주얼브리핑을 확인하지 못했습니다. 문서를 다시 확인해주세요.",
+                )
+        if not comprehensive_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail="종합의견서도 함께 업로드가 필요합니다. 필요시 한국교통안전공단에 요청해주세요.",
+            )
+        if not visual_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail="비주얼브리핑도 함께 업로드가 필요합니다. 필요시 한국교통안전공단에 요청해주세요.",
+            )
+
+        merged_original = _pdf_concat(full_input_bytes)
         supabase.storage.from_(ORIGINAL_BUCKET).upload(
             path=original_path,
-            file=file_bytes,
+            file=merged_original,
             file_options={"content-type": "application/pdf"},
         )
 
-        # 2) PDF 텍스트 추출(최대 5페이지)
-        doc = fitz.open(tmp_path)
-        text = "".join([doc.load_page(i).get_text() for i in range(min(5, len(doc)))])
-        doc.close()
-
+        comprehensive_text = "\n".join(_pdf_pages_text(comprehensive_bytes))
+        visual_text = "\n".join(_pdf_pages_text(visual_bytes))
+        rules = _load_analysis_rules_text()
         prompt = f"""
-기계식 주차장 안전검사서에서 다음 정보를 추출해 순수 JSON으로만 응답하세요. 마크다운 기호(```)는 금지합니다.
+다음은 기계식 주차장 검사 문서 분석 작업입니다.
+아래 규칙을 가능한 한 준수하되, 응답은 반드시 순수 JSON 객체 하나로만 반환하세요.
 
-1. building_name: 건물 이름
-2. region_summary: 주소에서 '시/군/구'까지만 (예: 서울시 송파구)
-3. address_detail: region_summary를 제외한 나머지 상세 주소 전체
-4. parking_type: 기계식 주차장의 기종 및 구동 방식(종류 및 방식) (예: 승강기식 횡식 하부승입식. 없으면 '기종 확인 불가')
-5. mandatory_repairs: '부적합' 항목 리스트
-6. optional_repairs: '권고' 또는 '주의' 항목 리스트
+[규칙]
+{rules[:14000]}
 
-텍스트: {text[:20000]}
+[출력 JSON 스키마]
+{{
+  "site_info": {{
+    "address": {{
+      "building_name": "string",
+      "region_summary": "string",
+      "address_detail": "string"
+    }},
+    "parking": {{
+      "parking_type": "string",
+      "manufacturer": "string"
+    }}
+  }},
+  "mandatory_repairs": [{{"item":"string","reason":"string","source_pages":[1],"source_document":"종합의견서|비주얼브리핑"}}],
+  "optional_repairs": [{{"item":"string","reason":"string","source_pages":[1],"source_document":"종합의견서|비주얼브리핑"}}],
+  "reference_notes": [{{"note":"string","reason":"string","source_pages":[1],"source_document":"종합의견서|비주얼브리핑"}}],
+  "redaction_summary": {{"targets":["string"],"reason":"string"}},
+  "documents": {{"has_comprehensive": true, "has_visual": true}}
+}}
+
+[종합의견서 텍스트]
+{comprehensive_text[:22000]}
+
+[비주얼브리핑 텍스트]
+{visual_text[:22000]}
 """
         res_json = await _post_gemini_with_retry({"contents": [{"parts": [{"text": prompt}]}]})
         ai_raw = res_json["candidates"][0]["content"]["parts"][0]["text"]
@@ -605,28 +835,113 @@ async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File
             ai_raw = ai_raw.split("```")[1].replace("json", "").strip().split("```")[0].strip()
         ai_data = json.loads(ai_raw)
 
-        # 3) 마스킹 PDF 생성/업로드 (LLM 추가 호출 없음)
-        masked_bytes = _build_masked_pdf(file_bytes, ai_data)
+        site_info = _safe_dict(ai_data.get("site_info"))
+        addr = _safe_dict(site_info.get("address"))
+        park = _safe_dict(site_info.get("parking"))
+        building_name = _clean_text(addr.get("building_name") or ai_data.get("building_name") or "건물명 미확인")
+        region_summary = _normalize_region_summary(addr.get("region_summary") or ai_data.get("region_summary") or "위치 미확인")
+        address_detail = _clean_text(addr.get("address_detail") or ai_data.get("address_detail") or "")
+        parking_type = _clean_text(park.get("parking_type") or ai_data.get("parking_type") or "기종 확인 불가")
+        manufacturer = _clean_text(park.get("manufacturer") or "")
+
+        def _normalize_repair_items(items, key_name="item"):
+            out = []
+            for item in items or []:
+                if isinstance(item, str):
+                    entry = {"item": _clean_text(item), "reason": "", "source_pages": [], "source_document": ""}
+                elif isinstance(item, dict):
+                    entry = {
+                        "item": _clean_text(item.get(key_name) or item.get("item") or item.get("name") or ""),
+                        "reason": _clean_text(item.get("reason") or item.get("basis") or ""),
+                        "source_pages": item.get("source_pages") if isinstance(item.get("source_pages"), list) else [],
+                        "source_document": _clean_text(item.get("source_document") or ""),
+                    }
+                else:
+                    continue
+                if not entry["item"]:
+                    continue
+                guide = _match_guide_comment(entry["item"])
+                entry["guide_comment"] = guide["guide_comment"]
+                entry["matched_alias"] = guide["matched_alias"]
+                out.append(entry)
+            return out
+
+        mandatory_repairs = _normalize_repair_items(ai_data.get("mandatory_repairs", []))
+        optional_repairs = _normalize_repair_items(ai_data.get("optional_repairs", []))
+        reference_notes = []
+        for n in ai_data.get("reference_notes", []) or []:
+            if isinstance(n, str):
+                reference_notes.append({"note": _clean_text(n), "reason": "", "source_pages": [], "source_document": ""})
+            elif isinstance(n, dict):
+                reference_notes.append(
+                    {
+                        "note": _clean_text(n.get("note") or n.get("item") or ""),
+                        "reason": _clean_text(n.get("reason") or ""),
+                        "source_pages": n.get("source_pages") if isinstance(n.get("source_pages"), list) else [],
+                        "source_document": _clean_text(n.get("source_document") or ""),
+                    }
+                )
+
+        redaction_targets = list(
+            dict.fromkeys(
+                [
+                    building_name,
+                    region_summary,
+                    address_detail,
+                    manufacturer,
+                    "관리자",
+                    "검사자",
+                    "보수업체",
+                    "보수사",
+                    "인증번호",
+                ]
+            )
+        )
+        masked_bytes = _build_masked_pdf(
+            _pdf_concat([_split_comprehensive_before_wire(comprehensive_bytes), visual_bytes]),
+            {"site_info": {"address": {"building_name": building_name, "region_summary": region_summary, "address_detail": address_detail}, "parking": {"parking_type": parking_type, "manufacturer": manufacturer}}},
+            extra_sensitive_terms=redaction_targets,
+        )
         supabase.storage.from_(MASKED_BUCKET).upload(
             path=masked_path,
             file=masked_bytes,
             file_options={"content-type": "application/pdf"},
         )
 
-        # 4) DB 저장
+        parsed_data = {
+            "documents": {"has_comprehensive": True, "has_visual": True},
+            "site_info": {
+                "address": {
+                    "building_name": building_name,
+                    "region_summary": region_summary,
+                    "address_detail": address_detail,
+                },
+                "parking": {
+                    "parking_type": parking_type,
+                    "manufacturer": manufacturer,
+                },
+            },
+            "mandatory_repairs": mandatory_repairs,
+            "optional_repairs": optional_repairs,
+            "reference_notes": reference_notes,
+            "redaction_summary": {
+                "targets": redaction_targets,
+                "reason": "서비스 외 개인 접촉 가능성이 있는 식별 정보를 보수적으로 가림 처리",
+            },
+            "mandatory": [x["item"] for x in mandatory_repairs],
+            "optional": [x["item"] for x in optional_repairs],
+        }
+
         insert_data = {
             "status": "draft",
-            "region_summary": _normalize_region_summary(ai_data.get("region_summary", "위치 미확인")),
-            "address_detail": ai_data.get("address_detail", ""),
-            "building_name": ai_data.get("building_name", "건물명 미확인"),
-            "parking_type": ai_data.get("parking_type", "기종 확인 불가"),
+            "region_summary": region_summary or "위치 미확인",
+            "address_detail": address_detail,
+            "building_name": building_name,
+            "parking_type": parking_type,
             "original_pdf_path": original_path,
             "masked_pdf_path": masked_path,
-            "parsed_data": {
-                "mandatory": _safe_list(ai_data.get("mandatory_repairs", [])),
-                "optional": _safe_list(ai_data.get("optional_repairs", [])),
-            },
-            "selected_items": _safe_list(ai_data.get("mandatory_repairs", [])),
+            "parsed_data": parsed_data,
+            "selected_items": [x["item"] for x in mandatory_repairs],
         }
         # 게스트 업로드 허용: 로그인 사용자인 경우에만 requester_id 저장
         if requester_id:
@@ -646,8 +961,7 @@ async def upload_pdf(requester_id: Optional[str] = None, file: UploadFile = File
             )
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        pass
 
 
 @app.post("/api/update-request")

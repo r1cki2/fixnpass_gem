@@ -11,7 +11,7 @@ import { savePendingQuoteRequest, submitPendingQuoteRequest } from '@/lib/pendin
 import { useRouter } from 'next/navigation';
 
 export default function IntroPage() {
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<any>(null);
   const [user, setUser] = useState<any>(null);
@@ -65,17 +65,17 @@ export default function IntroPage() {
   }, [router]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    if (acceptedFiles.length > 0) setFile(acceptedFiles[0]);
+    if (acceptedFiles.length > 0) setFiles(acceptedFiles.slice(0, 2));
   }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: { 'application/pdf': ['.pdf'] },
-    maxFiles: 1,
+    maxFiles: 2,
   });
 
   const handleUpload = async () => {
-    if (!file) return;
+    if (!files.length) return;
     if (role === "contractor") {
       alert("수리업체 계정은 수리 의뢰를 등록할 수 없습니다.");
       router.push("/contractor/market");
@@ -84,7 +84,7 @@ export default function IntroPage() {
     setIsUploading(true);
 
     const formData = new FormData();
-    formData.append('file', file);
+    files.forEach((f) => formData.append('files', f));
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
     const query = user?.id ? `?requester_id=${encodeURIComponent(user.id)}` : '';
 
@@ -199,18 +199,22 @@ export default function IntroPage() {
             <div {...getRootProps()} className={`border-2 border-dashed rounded-2xl p-16 flex flex-col items-center justify-center cursor-pointer transition-all ${isDragActive ? 'border-blue-500 bg-blue-50' : 'border-slate-300 hover:border-slate-400 bg-white'}`}>
               <input {...getInputProps()} />
               <UploadCloud className={`w-12 h-12 mb-4 ${isDragActive ? 'text-blue-500' : 'text-slate-400'}`} />
-              {file ? (
-                <div className="flex items-center gap-2 text-blue-600 font-bold">
-                  <FileText className="w-5 h-5" /> {file.name}
+              {files.length > 0 ? (
+                <div className="space-y-1 text-blue-600 font-bold text-left">
+                  {files.map((f) => (
+                    <div key={f.name} className="flex items-center gap-2">
+                      <FileText className="w-5 h-5" /> {f.name}
+                    </div>
+                  ))}
                 </div>
               ) : (
                 <div className="text-center">
-                  <p className="text-slate-700 font-bold">검사 결과서(PDF)를 여기에 끌어다 놓으세요</p>
+                  <p className="text-slate-700 font-bold">검사 결과서(PDF)를 1~2개까지 업로드하세요</p>
                 </div>
               )}
             </div>
             
-            <button onClick={handleUpload} disabled={!file || isUploading} className="w-full mt-8 bg-slate-900 text-white py-4 rounded-xl font-bold text-lg hover:bg-slate-800 disabled:bg-slate-300 flex items-center justify-center gap-2">
+            <button onClick={handleUpload} disabled={files.length === 0 || isUploading} className="w-full mt-8 bg-slate-900 text-white py-4 rounded-xl font-bold text-lg hover:bg-slate-800 disabled:bg-slate-300 flex items-center justify-center gap-2">
               {isUploading ? <><Loader2 className="w-6 h-6 animate-spin" /> AI 분석 진행 중...</> : '분석 시작하기'}
             </button>
           </section>
