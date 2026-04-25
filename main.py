@@ -632,6 +632,7 @@ def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict, extra_sensitive_
     ]
     if extra_sensitive_terms:
         sensitive_terms.extend(extra_sensitive_terms)
+    sensitive_terms.extend(_collect_sensitive_from_lines(full_text))
     # 텍스트에서 직접 추출 가능한 식별 패턴 마스킹
     sensitive_terms += re.findall(r"\b01[0-9][-\s]?\d{3,4}[-\s]?\d{4}\b", full_text)
     sensitive_terms += re.findall(r"\b0\d{1,2}[-\s]?\d{3,4}[-\s]?\d{4}\b", full_text)
@@ -688,6 +689,24 @@ def _safe_dict(obj) -> dict:
     return obj if isinstance(obj, dict) else {}
 
 
+def _collect_sensitive_from_lines(full_text: str) -> list[str]:
+    lines = [x.strip() for x in (full_text or "").splitlines() if x.strip()]
+    out: list[str] = []
+    markers = ["건물명", "소재지", "주소", "상세주소", "관리자", "검사자", "인증번호", "보수사", "보수업체", "연락처", "전화번호"]
+    for line in lines:
+        normalized = re.sub(r"\s+", "", line)
+        if any(m in normalized for m in markers):
+            out.append(line)
+            for sep in [":", "："]:
+                if sep in line:
+                    out.append(line.split(sep, 1)[1].strip())
+    for token in re.split(r"[\s,()/\-]+", " ".join(out)):
+        t = token.strip()
+        if len(t) >= 2:
+            out.append(t)
+    return [x for x in out if x]
+
+
 async def _extract_doc_signature(text: str, label: str) -> dict:
     prompt = f"""
 아래는 {label} 텍스트입니다.
@@ -719,17 +738,10 @@ async def _is_same_case_documents(comprehensive_text: str, visual_text: str) -> 
     sig_v = await _extract_doc_signature(visual_text, "비주얼브리핑")
     c_name = re.sub(r"\s+", "", sig_c.get("building_name", ""))
     v_name = re.sub(r"\s+", "", sig_v.get("building_name", ""))
-    c_region = sig_c.get("region_summary", "")
-    v_region = sig_v.get("region_summary", "")
-    name_ok = (c_name and v_name and (c_name in v_name or v_name in c_name)) or difflib.SequenceMatcher(None, c_name, v_name).ratio() >= 0.6
-    region_ok = (c_region and v_region and (c_region == v_region or c_region in v_region or v_region in c_region))
-    # 항목이 전혀 다른 문서 조합을 거르기 위한 보조 체크
-    c_items = [re.sub(r"\s+", "", x) for x in sig_c.get("mandatory_items", [])]
-    v_items = [re.sub(r"\s+", "", x) for x in sig_v.get("mandatory_items", [])]
-    item_ok = True
-    if c_items and v_items:
-        item_ok = any((ci in vi or vi in ci or difflib.SequenceMatcher(None, ci, vi).ratio() >= 0.58) for ci in c_items for vi in v_items)
-    return bool(name_ok and region_ok and item_ok)
+    if not c_name or not v_name:
+        return False
+    name_ok = (c_name in v_name or v_name in c_name) or difflib.SequenceMatcher(None, c_name, v_name).ratio() >= 0.6
+    return bool(name_ok)
 
 
 def _extract_with_llm(comprehensive_text: str, visual_text: str) -> dict:
@@ -952,6 +964,7 @@ async def upload_pdf(
                     region_summary,
                     address_detail,
                     "관리자",
+                    "담당자",
                     "검사자",
                     "보수업체",
                     "보수사",

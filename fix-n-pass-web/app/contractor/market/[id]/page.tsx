@@ -144,10 +144,13 @@ export default function ContractorBidPage() {
             <div>
               <h1 className="text-3xl font-black text-slate-900 mb-2">{req.site_alias || "비공개 현장"}</h1>
               <p className="text-slate-500 font-medium">{req.region_summary} · {req.parking_type}</p>
-              <p className="text-xs text-slate-500 mt-1">제작사: {manufacturer} · 승강기 대수: {elevatorCount}</p>
-              <p className="text-xs text-slate-400 mt-1">요청 상태: {req.request_stage_kr || req.status}</p>
-              <p className="text-xs text-slate-500 mt-2">견적 마감일: {deadlineLabel}</p>
-              <p className="text-xs text-slate-500">내 견적 등록일: {myBidAt}</p>
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <DetailMetaChip label="제작사" value={manufacturer} />
+                <DetailMetaChip label="승강기 대수" value={elevatorCount} />
+                <DetailMetaChip label="요청 상태" value={req.request_stage_kr || req.status} />
+                <DetailMetaChip label="견적 마감일" value={deadlineLabel} />
+                <DetailMetaChip label="내 견적 등록일" value={myBidAt} />
+              </div>
             </div>
             {isMatched ? (
               <span className="bg-indigo-100 text-indigo-700 px-4 py-2 rounded-2xl text-sm font-black flex items-center gap-2">
@@ -218,6 +221,15 @@ export default function ContractorBidPage() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function DetailMetaChip({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+      <p className="text-[11px] text-slate-500 mb-1">{label}</p>
+      <p className="text-sm font-semibold text-slate-700">{value || "-"}</p>
     </div>
   );
 }
