@@ -96,8 +96,15 @@ export default function IntroPage() {
 
       // 진짜 에러 내용을 파악하기 위해 텍스트로 추출합니다.
       if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`백엔드 응답 오류(${res.status}): ${errText}`);
+        let message = "분석 중 오류가 발생했습니다.";
+        try {
+          const errJson = await res.json();
+          message = errJson?.detail || message;
+        } catch {
+          const errText = await res.text();
+          message = errText || message;
+        }
+        throw new Error(message);
       }
 
       const result = await res.json();
@@ -186,6 +193,13 @@ export default function IntroPage() {
     }
   };
 
+  const mandatoryEntries = Array.isArray(analysisResult?.parsed_data?.mandatory_repairs)
+    ? analysisResult.parsed_data.mandatory_repairs
+    : (analysisResult?.parsed_data?.mandatory || []).map((item: string) => ({ item }));
+  const optionalEntries = Array.isArray(analysisResult?.parsed_data?.optional_repairs)
+    ? analysisResult.parsed_data.optional_repairs
+    : (analysisResult?.parsed_data?.optional || []).map((item: string) => ({ item }));
+
   return (
     <div className="min-h-screen bg-white text-slate-900 font-sans">
       <main className="max-w-4xl mx-auto pt-20 pb-10 px-6">
@@ -209,7 +223,7 @@ export default function IntroPage() {
                 </div>
               ) : (
                 <div className="text-center">
-                  <p className="text-slate-700 font-bold">검사 결과서(PDF)를 1~2개까지 업로드하세요</p>
+                  <p className="text-slate-700 font-bold">공단에서 제공 받으신 pdf 파일을 업로드하세요.(pdf는 종합의견서, 비주얼브리핑 각 1개씩 혹은 합쳐진 1개 파일일 수 있습니다. 모두 업로드 해주세요.)</p>
                 </div>
               )}
             </div>
@@ -250,38 +264,52 @@ export default function IntroPage() {
                 </div>
               </div>
 
-              {analysisResult.parsed_data.mandatory?.length > 0 && (
+              {mandatoryEntries.length > 0 && (
                 <div className="space-y-4 mb-8">
                   <h3 className="flex items-center gap-2 text-red-600 font-black text-lg mb-2">
                     <AlertCircle className="w-6 h-6" /> 부적합 항목 <span className="text-sm font-medium text-red-400">(운영을 위해 수리 필수)</span>
                   </h3>
                   <div className="grid gap-3">
-                    {analysisResult.parsed_data.mandatory.map((item: string, i: number) => (
+                    {mandatoryEntries.map((entry: any, i: number) => {
+                      const item = entry?.item || "";
+                      return (
                       <div key={`man-${i}`} onClick={() => toggleItem(item)} className={`flex items-start gap-4 p-4 rounded-2xl border-2 cursor-pointer transition-all ${selectedItems.includes(item) ? 'border-red-500 bg-red-50' : 'border-slate-100 bg-white'}`}>
                         <div className="mt-0.5">
                           {selectedItems.includes(item) ? <CheckSquare className="w-6 h-6 text-red-600 shrink-0" /> : <Square className="w-6 h-6 text-slate-200 shrink-0" />}
                         </div>
-                        <span className={`text-base leading-relaxed ${selectedItems.includes(item) ? 'text-red-900 font-bold' : 'text-slate-600'}`}>{item}</span>
+                        <div>
+                          <span className={`text-base leading-relaxed ${selectedItems.includes(item) ? 'text-red-900 font-bold' : 'text-slate-600'}`}>{item}</span>
+                          {entry?.guide_comment ? (
+                            <p className="mt-1 text-xs text-slate-500">{entry.guide_comment}</p>
+                          ) : null}
+                        </div>
                       </div>
-                    ))}
+                    )})}
                   </div>
                 </div>
               )}
 
-              {analysisResult.parsed_data.optional?.length > 0 && (
+              {optionalEntries.length > 0 && (
                 <div className="space-y-4 mb-8">
                   <h3 className="flex items-center gap-2 text-blue-600 font-black text-lg mb-2">
                     <Info className="w-6 h-6" /> 권고 항목 <span className="text-sm font-medium text-blue-400">(이번 기회에 함께 수리하면 좋습니다)</span>
                   </h3>
                   <div className="grid gap-3">
-                    {analysisResult.parsed_data.optional.map((item: string, i: number) => (
+                    {optionalEntries.map((entry: any, i: number) => {
+                      const item = entry?.item || "";
+                      return (
                       <div key={`opt-${i}`} onClick={() => toggleItem(item)} className={`flex items-start gap-4 p-4 rounded-2xl border-2 cursor-pointer transition-all ${selectedItems.includes(item) ? 'border-blue-500 bg-blue-50' : 'border-slate-100 bg-white'}`}>
                         <div className="mt-0.5">
                           {selectedItems.includes(item) ? <CheckSquare className="w-6 h-6 text-blue-600 shrink-0" /> : <Square className="w-6 h-6 text-slate-200 shrink-0" />}
                         </div>
-                        <span className={`text-base leading-relaxed ${selectedItems.includes(item) ? 'text-blue-900 font-bold' : 'text-slate-600'}`}>{item}</span>
+                        <div>
+                          <span className={`text-base leading-relaxed ${selectedItems.includes(item) ? 'text-blue-900 font-bold' : 'text-slate-600'}`}>{item}</span>
+                          {entry?.guide_comment ? (
+                            <p className="mt-1 text-xs text-slate-500">{entry.guide_comment}</p>
+                          ) : null}
+                        </div>
                       </div>
-                    ))}
+                    )})}
                   </div>
                 </div>
               )}

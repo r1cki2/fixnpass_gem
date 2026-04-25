@@ -115,6 +115,9 @@ export default function ContractorBidPage() {
   };
 
   if (!req) return <div className="min-h-screen bg-slate-50 flex items-center justify-center">로딩 중...</div>;
+  const parkingInfo = req?.parsed_data?.site_info?.parking || {};
+  const manufacturer = parkingInfo?.manufacturer || "-";
+  const elevatorCount = parkingInfo?.elevator_count || "-";
 
   const deadlineLabel = req.quote_deadline_at
     ? new Date(req.quote_deadline_at).toLocaleDateString("ko-KR")
@@ -141,6 +144,7 @@ export default function ContractorBidPage() {
             <div>
               <h1 className="text-3xl font-black text-slate-900 mb-2">{req.site_alias || "비공개 현장"}</h1>
               <p className="text-slate-500 font-medium">{req.region_summary} · {req.parking_type}</p>
+              <p className="text-xs text-slate-500 mt-1">제작사: {manufacturer} · 승강기 대수: {elevatorCount}</p>
               <p className="text-xs text-slate-400 mt-1">요청 상태: {req.request_stage_kr || req.status}</p>
               <p className="text-xs text-slate-500 mt-2">견적 마감일: {deadlineLabel}</p>
               <p className="text-xs text-slate-500">내 견적 등록일: {myBidAt}</p>

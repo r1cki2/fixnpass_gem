@@ -37,7 +37,8 @@
           "required": ["parking_type", "manufacturer"],
           "properties": {
             "parking_type": { "type": "string" },
-            "manufacturer": { "type": "string" }
+            "manufacturer": { "type": "string" },
+            "elevator_count": { "type": "string" }
           }
         }
       }

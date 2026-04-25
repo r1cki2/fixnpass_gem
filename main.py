@@ -1,6 +1,7 @@
 import functools
 import asyncio
 import csv
+import difflib
 import json
 import logging
 import smtplib
@@ -463,11 +464,24 @@ def _match_guide_comment(item: str) -> dict:
     t = re.sub(r"\s+", "", (item or "").lower())
     if not t:
         return {"guide_comment": None, "matched_alias": None}
+    best_score = 0.0
+    best_row = None
+    best_alias = None
     for row in _load_guide_rows():
         for alias in row["aliases"]:
             a = re.sub(r"\s+", "", alias.lower())
-            if a and (a in t or t in a):
+            if not a:
+                continue
+            if a in t or t in a:
                 return {"guide_comment": row["guide_comment"], "matched_alias": alias}
+            # 완전 포함이 아니면 문자열 유사도 기반으로 완화 매칭
+            score = difflib.SequenceMatcher(None, t, a).ratio()
+            if score > best_score:
+                best_score = score
+                best_row = row
+                best_alias = alias
+    if best_row and best_score >= 0.62:
+        return {"guide_comment": best_row["guide_comment"], "matched_alias": best_alias}
     return {"guide_comment": None, "matched_alias": None}
 
 
@@ -614,8 +628,7 @@ def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict, extra_sensitive_
         str(address_info.get("building_name", "")).strip(),
         str(address_info.get("region_summary", "")).strip(),
         str(address_info.get("address_detail", "")).strip(),
-        str(parking_info.get("parking_type", "")).strip(),
-        str(parking_info.get("manufacturer", "")).strip(),
+        str(address_info.get("manager_name", "")).strip(),
     ]
     if extra_sensitive_terms:
         sensitive_terms.extend(extra_sensitive_terms)
@@ -628,13 +641,11 @@ def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict, extra_sensitive_
     sensitive_terms = list(dict.fromkeys(sensitive_terms))
 
     for page in doc:
-        redaction_count = 0
+        mask_count = 0
         for term in sensitive_terms:
             for rect in page.search_for(term):
-                page.add_redact_annot(rect, fill=(1, 1, 1))
-                redaction_count += 1
-        if redaction_count > 0:
-            page.apply_redactions()
+                page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+                mask_count += 1
 
     pdf_bytes = doc.tobytes()
     doc.close()
@@ -675,6 +686,50 @@ def _split_comprehensive_before_wire(pdf_bytes: bytes) -> bytes:
 
 def _safe_dict(obj) -> dict:
     return obj if isinstance(obj, dict) else {}
+
+
+async def _extract_doc_signature(text: str, label: str) -> dict:
+    prompt = f"""
+아래는 {label} 텍스트입니다.
+아래 스키마로 JSON만 반환하세요.
+{{
+  "building_name": "string",
+  "region_summary": "string",
+  "address_detail": "string",
+  "mandatory_items": ["string"]
+}}
+텍스트:
+{text[:12000]}
+"""
+    res_json = await _post_gemini_with_retry({"contents": [{"parts": [{"text": prompt}]}]})
+    ai_raw = res_json["candidates"][0]["content"]["parts"][0]["text"]
+    if "```" in ai_raw:
+        ai_raw = ai_raw.split("```")[1].replace("json", "").strip().split("```")[0].strip()
+    parsed = json.loads(ai_raw)
+    return {
+        "building_name": _clean_text(parsed.get("building_name") or ""),
+        "region_summary": _normalize_region_summary(parsed.get("region_summary") or ""),
+        "address_detail": _clean_text(parsed.get("address_detail") or ""),
+        "mandatory_items": [str(x).strip() for x in (parsed.get("mandatory_items") or []) if str(x).strip()],
+    }
+
+
+async def _is_same_case_documents(comprehensive_text: str, visual_text: str) -> bool:
+    sig_c = await _extract_doc_signature(comprehensive_text, "종합의견서")
+    sig_v = await _extract_doc_signature(visual_text, "비주얼브리핑")
+    c_name = re.sub(r"\s+", "", sig_c.get("building_name", ""))
+    v_name = re.sub(r"\s+", "", sig_v.get("building_name", ""))
+    c_region = sig_c.get("region_summary", "")
+    v_region = sig_v.get("region_summary", "")
+    name_ok = (c_name and v_name and (c_name in v_name or v_name in c_name)) or difflib.SequenceMatcher(None, c_name, v_name).ratio() >= 0.6
+    region_ok = (c_region and v_region and (c_region == v_region or c_region in v_region or v_region in c_region))
+    # 항목이 전혀 다른 문서 조합을 거르기 위한 보조 체크
+    c_items = [re.sub(r"\s+", "", x) for x in sig_c.get("mandatory_items", [])]
+    v_items = [re.sub(r"\s+", "", x) for x in sig_v.get("mandatory_items", [])]
+    item_ok = True
+    if c_items and v_items:
+        item_ok = any((ci in vi or vi in ci or difflib.SequenceMatcher(None, ci, vi).ratio() >= 0.58) for ci in c_items for vi in v_items)
+    return bool(name_ok and region_ok and item_ok)
 
 
 def _extract_with_llm(comprehensive_text: str, visual_text: str) -> dict:
@@ -795,6 +850,12 @@ async def upload_pdf(
 
         comprehensive_text = "\n".join(_pdf_pages_text(comprehensive_bytes))
         visual_text = "\n".join(_pdf_pages_text(visual_bytes))
+        should_check_pair_consistency = len(pdf_payloads) >= 2
+        if should_check_pair_consistency and not await _is_same_case_documents(comprehensive_text, visual_text):
+            raise HTTPException(
+                status_code=400,
+                detail="같은 건에 대해 제공된 종합의견서와 비주얼브리핑을 업로드 해주세요.",
+            )
         rules = _load_analysis_rules_text()
         prompt = f"""
 다음은 기계식 주차장 검사 문서 분석 작업입니다.
@@ -813,7 +874,8 @@ async def upload_pdf(
     }},
     "parking": {{
       "parking_type": "string",
-      "manufacturer": "string"
+      "manufacturer": "string",
+      "elevator_count": "string"
     }}
   }},
   "mandatory_repairs": [{{"item":"string","reason":"string","source_pages":[1],"source_document":"종합의견서|비주얼브리핑"}}],
@@ -843,6 +905,7 @@ async def upload_pdf(
         address_detail = _clean_text(addr.get("address_detail") or ai_data.get("address_detail") or "")
         parking_type = _clean_text(park.get("parking_type") or ai_data.get("parking_type") or "기종 확인 불가")
         manufacturer = _clean_text(park.get("manufacturer") or "")
+        elevator_count = _clean_text(park.get("elevator_count") or ai_data.get("elevator_count") or "")
 
         def _normalize_repair_items(items, key_name="item"):
             out = []
@@ -888,18 +951,19 @@ async def upload_pdf(
                     building_name,
                     region_summary,
                     address_detail,
-                    manufacturer,
                     "관리자",
                     "검사자",
                     "보수업체",
                     "보수사",
+                    "연락처",
+                    "전화번호",
                     "인증번호",
                 ]
             )
         )
         masked_bytes = _build_masked_pdf(
             _pdf_concat([_split_comprehensive_before_wire(comprehensive_bytes), visual_bytes]),
-            {"site_info": {"address": {"building_name": building_name, "region_summary": region_summary, "address_detail": address_detail}, "parking": {"parking_type": parking_type, "manufacturer": manufacturer}}},
+            {"site_info": {"address": {"building_name": building_name, "region_summary": region_summary, "address_detail": address_detail}, "parking": {"parking_type": parking_type, "manufacturer": manufacturer, "elevator_count": elevator_count}}},
             extra_sensitive_terms=redaction_targets,
         )
         supabase.storage.from_(MASKED_BUCKET).upload(
@@ -919,6 +983,7 @@ async def upload_pdf(
                 "parking": {
                     "parking_type": parking_type,
                     "manufacturer": manufacturer,
+                    "elevator_count": elevator_count,
                 },
             },
             "mandatory_repairs": mandatory_repairs,
