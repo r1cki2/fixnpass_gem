@@ -7,20 +7,46 @@ import { useRouter } from "next/navigation";
 
 export default function AuthNav() {
   const [user, setUser] = useState<any>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const router = useRouter();
-  const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL;
 
   useEffect(() => {
     // 1. 페이지 접속 시 현재 로그인된 세션 정보 가져오기
     const fetchSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       setUser(session?.user || null);
+      if (!session?.access_token) {
+        setIsAdmin(false);
+        return;
+      }
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+        const res = await fetch(`${baseUrl}/api/admin/session`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        setIsAdmin(res.ok);
+      } catch {
+        setIsAdmin(false);
+      }
     };
     fetchSession();
 
     // 2. 로그인/로그아웃 등 상태 변화가 생길 때마다 자동으로 화면 업데이트 (이벤트 리스너)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setUser(session?.user || null);
+      if (!session?.access_token) {
+        setIsAdmin(false);
+        return;
+      }
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+        const res = await fetch(`${baseUrl}/api/admin/session`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        setIsAdmin(res.ok);
+      } catch {
+        setIsAdmin(false);
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -36,7 +62,6 @@ export default function AuthNav() {
 
   // 로그인 상태일 때 보여줄 UI
   if (user) {
-    const isAdmin = adminEmail && user.email?.toLowerCase() === adminEmail.toLowerCase();
     return (
       <div className="flex items-center gap-4">
         {isAdmin && (

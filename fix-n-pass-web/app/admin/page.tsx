@@ -41,9 +41,20 @@ export default function AdminPage() {
   const [reqStatusFilter, setReqStatusFilter] = useState("ALL");
   const [reqSearch, setReqSearch] = useState("");
   const [grantUserId, setGrantUserId] = useState("");
+  const [isMasterAdmin, setIsMasterAdmin] = useState(false);
+  const [allowedTabs, setAllowedTabs] = useState<Array<"requests" | "inquiries" | "ops" | "stats">>(["requests", "inquiries"]);
+  const [actionMessage, setActionMessage] = useState("");
 
   const baseUrl = useMemo(() => process.env.NEXT_PUBLIC_API_BASE_URL, []);
   const authHeader = (t: string) => ({ Authorization: `Bearer ${t}`, "Content-Type": "application/json" });
+  const runAction = async (message: string, fn: () => Promise<void>) => {
+    try {
+      setActionMessage(message);
+      await fn();
+    } finally {
+      setActionMessage("");
+    }
+  };
 
   const fetchAll = async (t: string) => {
     const [oRes, aRes, sRes, tRes, pRes, iRes, lRes, rRes] = await Promise.all([
@@ -83,48 +94,61 @@ export default function AdminPage() {
       const accessToken = data.session?.access_token;
       if (!accessToken) return router.replace("/login");
       setToken(accessToken);
+      const sRes = await fetch(`${baseUrl}/api/admin/session`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!sRes.ok) return router.replace("/");
+      const sJson = await sRes.json();
+      const tabs = (sJson?.data?.allowed_tabs || ["requests", "inquiries"]) as Array<"requests" | "inquiries" | "ops" | "stats">;
+      setAllowedTabs(tabs);
+      setIsMasterAdmin(Boolean(sJson?.data?.is_master));
+      if (!tabs.includes(activeTab)) setActiveTab(tabs[0] || "requests");
       await fetchAll(accessToken);
       setLoading(false);
     })();
   }, [router, baseUrl, reqStatusFilter]);
 
   const updateContractorApprovalSetting = async (next: boolean) => {
-    const res = await fetch(`${baseUrl}/api/admin/settings/contractor-approval`, {
-      method: "POST",
-      headers: authHeader(token),
-      body: JSON.stringify({ require_approval: next }),
+    await runAction("설정을 저장하는 중...", async () => {
+      const res = await fetch(`${baseUrl}/api/admin/settings/contractor-approval`, {
+        method: "POST",
+        headers: authHeader(token),
+        body: JSON.stringify({ require_approval: next }),
+      });
+      const json = await res.json();
+      if (!res.ok) return alert(json.detail || "설정 저장 실패");
+      setRequireContractorApproval(next);
     });
-    const json = await res.json();
-    if (!res.ok) return alert(json.detail || "설정 저장 실패");
-    setRequireContractorApproval(next);
   };
 
   const updateUserRole = async (userId: string, role: "requester" | "contractor") => {
-    const res = await fetch(`${baseUrl}/api/admin/users/${userId}/role`, {
-      method: "POST",
-      headers: authHeader(token),
-      body: JSON.stringify({ role }),
+    await runAction("회원 역할을 변경하는 중...", async () => {
+      const res = await fetch(`${baseUrl}/api/admin/users/${userId}/role`, {
+        method: "POST",
+        headers: authHeader(token),
+        body: JSON.stringify({ role }),
+      });
+      const json = await res.json();
+      if (!res.ok) return alert(json.detail || "역할 변경 실패");
+      await fetchAll(token);
     });
-    const json = await res.json();
-    if (!res.ok) return alert(json.detail || "역할 변경 실패");
-    await fetchAll(token);
   };
 
   const updateUserActive = async (userId: string, isActive: boolean, forceDuplicateOk = false) => {
-    const res = await fetch(`${baseUrl}/api/admin/users/${userId}/active`, {
-      method: "POST",
-      headers: authHeader(token),
-      body: JSON.stringify({ is_active: isActive, force_duplicate_ok: forceDuplicateOk }),
-    });
-    const json = await res.json();
-    if (res.status === 409) {
-      if (confirm(`${json.detail}\n\n중복 상호임을 확인하고 승인할까요?`)) {
-        return updateUserActive(userId, isActive, true);
+    await runAction("회원 상태를 변경하는 중...", async () => {
+      const res = await fetch(`${baseUrl}/api/admin/users/${userId}/active`, {
+        method: "POST",
+        headers: authHeader(token),
+        body: JSON.stringify({ is_active: isActive, force_duplicate_ok: forceDuplicateOk }),
+      });
+      const json = await res.json();
+      if (res.status === 409) {
+        if (confirm(`${json.detail}\n\n중복 상호임을 확인하고 승인할까요?`)) {
+          return updateUserActive(userId, isActive, true);
+        }
+        return;
       }
-      return;
-    }
-    if (!res.ok) return alert(json.detail || "계정 상태 변경 실패");
-    await fetchAll(token);
+      if (!res.ok) return alert(json.detail || "계정 상태 변경 실패");
+      await fetchAll(token);
+    });
   };
 
   const removeAuthUser = async (userId: string, email: string | null | undefined) => {
@@ -147,56 +171,64 @@ export default function AdminPage() {
     if (selectedUserIds.length === 0) return alert("삭제할 회원을 선택하세요.");
     const typed = window.prompt(`삭제를 진행하려면 DELETE ${selectedUserIds.length} 를 입력하세요.`);
     if (typed !== `DELETE ${selectedUserIds.length}`) return alert("확인 문구가 일치하지 않아 취소되었습니다.");
-    const res = await fetch(`${baseUrl}/api/admin/auth-users/bulk-remove`, {
-      method: "POST",
-      headers: authHeader(token),
-      body: JSON.stringify({ user_ids: selectedUserIds }),
+    await runAction("회원 일괄 삭제를 처리하는 중...", async () => {
+      const res = await fetch(`${baseUrl}/api/admin/auth-users/bulk-remove`, {
+        method: "POST",
+        headers: authHeader(token),
+        body: JSON.stringify({ user_ids: selectedUserIds }),
+      });
+      const json = await res.json();
+      if (!res.ok) return alert(json.detail || "일괄 삭제 실패");
+      setSelectedUserIds([]);
+      alert(`삭제 요청 ${json.data?.requested}건 중 ${json.data?.removed}건 처리`);
+      await fetchAll(token);
     });
-    const json = await res.json();
-    if (!res.ok) return alert(json.detail || "일괄 삭제 실패");
-    setSelectedUserIds([]);
-    alert(`삭제 요청 ${json.data?.requested}건 중 ${json.data?.removed}건 처리`);
-    await fetchAll(token);
   };
 
   const bulkUpdateRequests = async () => {
     if (selectedRequestIds.length === 0) return alert("상태 변경할 요청을 선택하세요.");
-    const res = await fetch(`${baseUrl}/api/admin/requests/bulk-status`, {
-      method: "POST",
-      headers: authHeader(token),
-      body: JSON.stringify({ request_ids: selectedRequestIds, status: bulkStatus }),
+    await runAction("요청 상태를 일괄 변경하는 중...", async () => {
+      const res = await fetch(`${baseUrl}/api/admin/requests/bulk-status`, {
+        method: "POST",
+        headers: authHeader(token),
+        body: JSON.stringify({ request_ids: selectedRequestIds, status: bulkStatus }),
+      });
+      const json = await res.json();
+      if (!res.ok) return alert(json.detail || "일괄 상태 변경 실패");
+      setSelectedRequestIds([]);
+      await fetchAll(token);
     });
-    const json = await res.json();
-    if (!res.ok) return alert(json.detail || "일괄 상태 변경 실패");
-    setSelectedRequestIds([]);
-    await fetchAll(token);
   };
 
   const bulkRequestAction = async (action: "hide" | "delete") => {
     if (selectedRequestIds.length === 0) return alert("처리할 요청을 선택하세요.");
     if (!confirm(`${selectedRequestIds.length}건에 대해 ${action === "hide" ? "비공개" : "삭제"}를 진행할까요?`)) return;
-    const res = await fetch(`${baseUrl}/api/admin/requests/bulk-action`, {
-      method: "POST",
-      headers: authHeader(token),
-      body: JSON.stringify({ request_ids: selectedRequestIds, action }),
+    await runAction(`${action === "hide" ? "비공개" : "삭제"} 처리를 진행하는 중...`, async () => {
+      const res = await fetch(`${baseUrl}/api/admin/requests/bulk-action`, {
+        method: "POST",
+        headers: authHeader(token),
+        body: JSON.stringify({ request_ids: selectedRequestIds, action }),
+      });
+      const json = await res.json();
+      if (!res.ok) return alert(json.detail || "처리 실패");
+      setSelectedRequestIds([]);
+      await fetchAll(token);
     });
-    const json = await res.json();
-    if (!res.ok) return alert(json.detail || "처리 실패");
-    setSelectedRequestIds([]);
-    await fetchAll(token);
   };
 
   const deploySitePopup = async () => {
-    const res = await fetch(`${baseUrl}/api/admin/site-announcements/deploy`, {
-      method: "POST",
-      headers: authHeader(token),
-      body: JSON.stringify({ title: popTitle.trim() || undefined, message: popMessage }),
+    await runAction("팝업 공지를 배포하는 중...", async () => {
+      const res = await fetch(`${baseUrl}/api/admin/site-announcements/deploy`, {
+        method: "POST",
+        headers: authHeader(token),
+        body: JSON.stringify({ title: popTitle.trim() || undefined, message: popMessage }),
+      });
+      const json = await res.json();
+      if (!res.ok) return alert(json.detail || "배포 실패");
+      setPopTitle("");
+      setPopMessage("");
+      await fetchAll(token);
     });
-    const json = await res.json();
-    if (!res.ok) return alert(json.detail || "배포 실패");
-    setPopTitle("");
-    setPopMessage("");
-    await fetchAll(token);
   };
 
   if (loading) return <div className="p-10">관리자 데이터를 불러오는 중...</div>;
@@ -241,13 +273,13 @@ export default function AdminPage() {
         <Card title="총 사용자 프로필" value={overview.counts.profiles} />
       </div>
       <div className="flex gap-2">
-        <button onClick={() => setActiveTab("requests")} className={`px-3 py-1 rounded ${activeTab === "requests" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>회원 및 견적 관리</button>
-        <button onClick={() => setActiveTab("inquiries")} className={`px-3 py-1 rounded ${activeTab === "inquiries" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>고객 문의 관리</button>
-        <button onClick={() => setActiveTab("ops")} className={`px-3 py-1 rounded ${activeTab === "ops" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>승인/팝업/운영</button>
-        <button onClick={() => setActiveTab("stats")} className={`px-3 py-1 rounded ${activeTab === "stats" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>서비스 사용 현황</button>
+        {allowedTabs.includes("requests") && <button onClick={() => setActiveTab("requests")} className={`px-3 py-1 rounded ${activeTab === "requests" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>회원 및 견적 관리</button>}
+        {allowedTabs.includes("inquiries") && <button onClick={() => setActiveTab("inquiries")} className={`px-3 py-1 rounded ${activeTab === "inquiries" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>고객 문의 관리</button>}
+        {allowedTabs.includes("ops") && <button onClick={() => setActiveTab("ops")} className={`px-3 py-1 rounded ${activeTab === "ops" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>승인/팝업/운영</button>}
+        {allowedTabs.includes("stats") && <button onClick={() => setActiveTab("stats")} className={`px-3 py-1 rounded ${activeTab === "stats" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>서비스 사용 현황</button>}
       </div>
 
-      {activeTab === "ops" && <section className="bg-white border rounded-2xl p-5 space-y-3">
+      {activeTab === "ops" && isMasterAdmin && <section className="bg-white border rounded-2xl p-5 space-y-3">
         <h2 className="text-xl font-bold">회원가입 승인 설정</h2>
         <p className="text-sm text-slate-500">현재 상태: {requireContractorApproval ? "ON (관리자 승인 필요)" : "OFF"}</p>
         <div className="flex items-center gap-2">
@@ -330,18 +362,16 @@ export default function AdminPage() {
           <span className="text-xs text-slate-500">선택 {selectedUserIds.length}명</span>
         </div>
         <div className="overflow-x-auto max-h-[620px] overflow-y-auto">
-          <table className="w-full text-sm min-w-[1220px]">
+          <table className="w-full text-sm min-w-[1420px]">
             <thead><tr className="border-b bg-slate-50">
-              <th className="py-2 px-2"></th><th className="py-2 px-2">이메일</th><th className="py-2 px-2">이름</th><th className="py-2 px-2">UUID</th>
-              <th className="py-2 px-2">역할</th><th className="py-2 px-2">권한표시</th><th className="py-2 px-2">휴대폰</th><th className="py-2 px-2">사무실 전화</th><th className="py-2 px-2">회사명</th><th className="py-2 px-2">상태</th><th className="py-2 px-2">액션</th>
+              <th className="py-2 px-2"></th><th className="py-2 px-2">이름</th><th className="py-2 px-2">역할</th><th className="py-2 px-2">권한표시</th>
+              <th className="py-2 px-2">회사명</th><th className="py-2 px-2">소재지</th><th className="py-2 px-2">휴대폰</th><th className="py-2 px-2">사무실 전화</th><th className="py-2 px-2">상태</th><th className="py-2 px-2">액션</th><th className="py-2 px-2">이메일</th><th className="py-2 px-2">UUID</th>
             </tr></thead>
             <tbody>
               {filteredUsers.map((u) => (
                 <tr key={u.id} className="border-b align-top">
                   <td className="py-2 px-2"><input type="checkbox" checked={selectedUserIds.includes(u.id)} onChange={(e) => setSelectedUserIds((prev) => e.target.checked ? [...prev, u.id] : prev.filter((x) => x !== u.id))} /></td>
-                  <td className="py-2 px-2 break-all">{u.email || "-"}</td>
                   <td className="py-2 px-2">{u.name || "-"}</td>
-                  <td className="py-2 px-2 text-xs font-mono break-all">{u.id}</td>
                   <td className="py-2 px-2">
                     {u.is_admin ? (
                       <span className="text-xs font-semibold">{u.is_master_admin ? "Master Admin" : "Administrator"}</span>
@@ -350,15 +380,18 @@ export default function AdminPage() {
                     )}
                   </td>
                   <td className="py-2 px-2 text-xs font-semibold">{u.role_display || "-"}</td>
+                  <td className="py-2 px-2 text-xs">{u.company_name || "-"}</td>
+                  <td className="py-2 px-2 text-xs">{u.business_location || "-"}</td>
                   <td className="py-2 px-2 text-xs">{u.phone_number || "-"}</td>
                   <td className="py-2 px-2 text-xs">{u.office_phone_number || "-"}</td>
-                  <td className="py-2 px-2 text-xs">{u.company_name || "-"}</td>
                   <td className="py-2 px-2 text-xs">{u.role === "contractor" && !u.is_active ? "승인대기/비활성" : u.is_active ? "활성" : "비활성"}</td>
                   <td className="py-2 px-2 space-y-1">
                     {u.role === "contractor" && !u.is_active && <button className="block w-full px-2 py-1 rounded border text-xs text-emerald-700" onClick={() => updateUserActive(u.id, true)}>가입 승인</button>}
                     <button className="block w-full px-2 py-1 rounded border text-xs" onClick={() => updateUserActive(u.id, !u.is_active)}>{u.is_active ? "비활성" : "재활성"}</button>
                     <button className="block w-full px-2 py-1 rounded border border-rose-200 text-xs text-rose-700" onClick={() => removeAuthUser(u.id, u.email)}>계정 삭제</button>
                   </td>
+                  <td className="py-2 px-2 break-all text-xs">{u.email || "-"}</td>
+                  <td className="py-2 px-2 text-xs font-mono break-all">{u.id}</td>
                 </tr>
               ))}
             </tbody>
@@ -366,21 +399,24 @@ export default function AdminPage() {
         </div>
       </section>}
 
-      {activeTab === "ops" && <section className="bg-white border rounded-2xl p-5 space-y-4">
+      {activeTab === "ops" && isMasterAdmin && <section className="bg-white border rounded-2xl p-5 space-y-4">
         <h2 className="text-xl font-bold">관리자 권한 부여(마스터 전용)</h2>
         <div className="flex gap-2">
           <input value={grantUserId} onChange={(e) => setGrantUserId(e.target.value)} className="border rounded px-3 py-2 text-sm flex-1" placeholder="관리자로 등록할 사용자 UUID" />
           <button
             onClick={async () => {
-              const res = await fetch(`${baseUrl}/api/admin/master/grant-admin`, {
-                method: "POST",
-                headers: authHeader(token),
-                body: JSON.stringify({ user_id: grantUserId }),
+              await runAction("관리자 권한을 부여하는 중...", async () => {
+                const res = await fetch(`${baseUrl}/api/admin/master/grant-admin`, {
+                  method: "POST",
+                  headers: authHeader(token),
+                  body: JSON.stringify({ user_id: grantUserId }),
+                });
+                const json = await res.json();
+                if (!res.ok) return alert(json.detail || "권한 부여 실패");
+                alert("관리자 권한을 부여했습니다.");
+                setGrantUserId("");
+                await fetchAll(token);
               });
-              const json = await res.json();
-              if (!res.ok) return alert(json.detail || "권한 부여 실패");
-              alert("관리자 권한을 부여했습니다.");
-              setGrantUserId("");
             }}
             className="px-3 py-2 rounded bg-slate-900 text-white text-sm"
           >
@@ -389,7 +425,7 @@ export default function AdminPage() {
         </div>
       </section>}
 
-      {activeTab === "ops" && <section className="bg-white border rounded-2xl p-5 space-y-4">
+      {activeTab === "ops" && isMasterAdmin && <section className="bg-white border rounded-2xl p-5 space-y-4">
         <h2 className="text-xl font-bold">첫 화면 팝업 (알림 배포)</h2>
         <input value={popTitle} onChange={(e) => setPopTitle(e.target.value)} placeholder="제목 (선택)" className="w-full border rounded-lg px-3 py-2 text-sm" />
         <textarea value={popMessage} onChange={(e) => setPopMessage(e.target.value)} placeholder="팝업 본문" className="w-full border rounded-lg px-3 py-2 text-sm min-h-[100px]" />
@@ -403,12 +439,12 @@ export default function AdminPage() {
         </ul>
       </section>}
 
-      {activeTab === "stats" && <section className="grid md:grid-cols-3 gap-4">
+      {activeTab === "stats" && isMasterAdmin && <section className="grid md:grid-cols-3 gap-4">
         <TrendCard title="일간 트렌드(30일)" items={trends.daily} />
         <TrendCard title="주간 트렌드(최근)" items={trends.weekly} />
         <TrendCard title="월간 트렌드(1년)" items={trends.monthly} />
       </section>}
-      {activeTab === "stats" && <section className="bg-white border rounded-2xl p-5">
+      {activeTab === "stats" && isMasterAdmin && <section className="bg-white border rounded-2xl p-5">
         <h2 className="text-xl font-bold mb-3">관리자 작업 로그</h2>
         <div className="max-h-[320px] overflow-y-auto space-y-2">
           {actionLogs.map((x) => (
@@ -422,6 +458,14 @@ export default function AdminPage() {
           ))}
         </div>
       </section>}
+      {actionMessage && (
+        <div className="fixed inset-0 z-50 bg-black/20 backdrop-blur-[1px] flex items-center justify-center">
+          <div className="bg-white border rounded-xl px-5 py-4 shadow-xl flex items-center gap-3">
+            <span className="inline-block w-5 h-5 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin" />
+            <p className="text-sm font-semibold text-slate-700">{actionMessage}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { 
   UploadCloud, FileText, CheckCircle, AlertCircle, 
-  Loader2, Square, CheckSquare, ArrowRight, Info 
+  Loader2, Square, CheckSquare, ArrowRight, Info, X
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { savePendingQuoteRequest, submitPendingQuoteRequest } from '@/lib/pendingQuote';
@@ -65,7 +65,16 @@ export default function IntroPage() {
   }, [router]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    if (acceptedFiles.length > 0) setFiles(acceptedFiles.slice(0, 2));
+    if (acceptedFiles.length === 0) return;
+    setFiles((prev) => {
+      const next = [...prev];
+      for (const f of acceptedFiles) {
+        if (next.length >= 2) break;
+        const exists = next.some((x) => x.name === f.name && x.size === f.size);
+        if (!exists) next.push(f);
+      }
+      return next;
+    });
   }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -120,6 +129,10 @@ export default function IntroPage() {
     } finally {
       setIsUploading(false);
     }
+  };
+
+  const removeFileAt = (idx: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== idx));
   };
 
   const toggleItem = (item: string) => {
@@ -215,9 +228,22 @@ export default function IntroPage() {
               <UploadCloud className={`w-12 h-12 mb-4 ${isDragActive ? 'text-blue-500' : 'text-slate-400'}`} />
               {files.length > 0 ? (
                 <div className="space-y-1 text-blue-600 font-bold text-left">
-                  {files.map((f) => (
-                    <div key={f.name} className="flex items-center gap-2">
+                  {files.map((f, i) => (
+                    <div key={`${f.name}-${f.size}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                      <div className="flex items-center gap-2 min-w-0">
                       <FileText className="w-5 h-5" /> {f.name}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeFileAt(i);
+                        }}
+                        className="text-slate-500 hover:text-rose-600"
+                        aria-label="파일 삭제"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -267,7 +293,7 @@ export default function IntroPage() {
               {mandatoryEntries.length > 0 && (
                 <div className="space-y-4 mb-8">
                   <h3 className="flex items-center gap-2 text-red-600 font-black text-lg mb-2">
-                    <AlertCircle className="w-6 h-6" /> 부적합 항목 <span className="text-sm font-medium text-red-400">(운영을 위해 수리 필수)</span>
+                    <AlertCircle className="w-6 h-6" /> 부적합 항목 <span className="text-sm font-medium text-red-400">(재검사 합격을 위해 수리 필수)</span>
                   </h3>
                   <div className="grid gap-3">
                     {mandatoryEntries.map((entry: any, i: number) => {
@@ -334,6 +360,16 @@ export default function IntroPage() {
           </section>
         )}
       </main>
+      {(isUploading || isRequesting) && (
+        <div className="fixed inset-0 z-50 bg-black/20 backdrop-blur-[1px] flex items-center justify-center">
+          <div className="bg-white border rounded-xl px-5 py-4 shadow-xl flex items-center gap-3">
+            <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+            <p className="text-sm font-semibold text-slate-700">
+              {isUploading ? "AI 분석을 진행하고 있습니다..." : "견적 요청을 처리하고 있습니다..."}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

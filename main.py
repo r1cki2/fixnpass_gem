@@ -2354,6 +2354,7 @@ async def admin_list_auth_users(authorization: Optional[str] = Header(default=No
         if uid:
             ids.append(str(uid))
     profiles_by_id: dict = {}
+    partner_profile_by_id: dict = {}
     if ids:
         pres = (
             supabase.table("profiles")
@@ -2363,6 +2364,14 @@ async def admin_list_auth_users(authorization: Optional[str] = Header(default=No
         )
         for p in pres.data or []:
             profiles_by_id[str(p["id"])] = p
+        pprof = (
+            supabase.table("partner_profiles")
+            .select("partner_id, business_location")
+            .in_("partner_id", ids)
+            .execute()
+        )
+        for p in pprof.data or []:
+            partner_profile_by_id[str(p.get("partner_id"))] = p
 
     out = []
     for u in all_users:
@@ -2377,6 +2386,7 @@ async def admin_list_auth_users(authorization: Optional[str] = Header(default=No
             uid = str(getattr(u, "id", "") or "")
             email = getattr(u, "email", None)
         prof = profiles_by_id.get(uid, {})
+        pprof = partner_profile_by_id.get(uid, {})
         if "is_active" not in prof:
             prof = {**prof, "is_active": True}
         out.append(
@@ -2387,6 +2397,7 @@ async def admin_list_auth_users(authorization: Optional[str] = Header(default=No
                 "phone_number": prof.get("phone_number"),
                 "office_phone_number": prof.get("office_phone_number"),
                 "company_name": prof.get("company_name"),
+                "business_location": pprof.get("business_location"),
                 "role": prof.get("role"),
                 "is_active": prof.get("is_active", True),
                 "profile_created_at": prof.get("created_at"),
@@ -2412,6 +2423,20 @@ async def admin_list_auth_users(authorization: Optional[str] = Header(default=No
                 row["role_display"] = "Master Admin"
     out.sort(key=lambda x: (x.get("email") or "").lower())
     return {"status": "success", "data": out}
+
+
+@app.get("/api/admin/session")
+async def get_admin_session(authorization: Optional[str] = Header(default=None)):
+    admin = _require_admin(authorization)
+    return {
+        "status": "success",
+        "data": {
+            "is_admin": True,
+            "is_master": bool(admin.get("is_master")),
+            "allowed_tabs": ["requests", "inquiries", "ops", "stats"] if admin.get("is_master") else ["requests", "inquiries"],
+            "email": admin.get("email"),
+        },
+    }
 
 
 @app.post("/api/admin/auth-users/{user_id}/password")
