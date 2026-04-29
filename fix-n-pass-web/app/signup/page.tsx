@@ -356,6 +356,9 @@ export default function SignupPage() {
                 regionDemandCounts={regionDemandCounts}
                 onSidoChange={setSelectedSidoForDemand}
               />
+              <p className="text-xs text-slate-500 mt-2">
+                관심지역으로 등록된 곳에서 견적 요청이 있으면 이메일로 안내해드리겠습니다.
+              </p>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

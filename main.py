@@ -69,7 +69,7 @@ GEMINI_URL = (
 )
 BASE_DIR = Path(__file__).resolve().parent
 ANALYSIS_RULES_PATH = BASE_DIR / "prompts" / "analysis_rules_v1.md"
-GUIDE_CSV_PATH = BASE_DIR / "data" / "fixnpass_gem_analysis_mandatory_classify.csv"
+GUIDE_CSV_PATH = BASE_DIR / "data" / "fixnpass_gem_analysis_mandatory_classify_v2.csv"
 
 
 def _key_kind(key: Optional[str]) -> str:
@@ -425,7 +425,7 @@ def _site_alias(request_id: int) -> str:
 
 def _request_stage_kr(status: str) -> str:
     mapping = {
-        "draft": "작성중",
+        "draft": "견적 요청 비정상",
         "requested": "신규요청(견적 대기)",
         "bidding": "견적 진행중",
         "matched": "업체 선정 완료",
@@ -468,26 +468,37 @@ def _load_guide_rows() -> list[dict]:
 def _match_guide_comment(item: str) -> dict:
     t = re.sub(r"\s+", "", (item or "").lower())
     if not t:
-        return {"guide_comment": None, "matched_alias": None}
-    best_score = 0.0
-    best_row = None
-    best_alias = None
+        return {"guide_comment": None, "matched_alias": None, "guide_comments": [], "matched_aliases": []}
+    matched_comments: list[str] = []
+    matched_aliases: list[str] = []
+    scored_candidates: list[tuple[float, str, str]] = []
     for row in _load_guide_rows():
         for alias in row["aliases"]:
             a = re.sub(r"\s+", "", alias.lower())
             if not a:
                 continue
             if a in t or t in a:
-                return {"guide_comment": row["guide_comment"], "matched_alias": alias}
+                matched_comments.append(row["guide_comment"])
+                matched_aliases.append(alias)
+                continue
             # 완전 포함이 아니면 문자열 유사도 기반으로 완화 매칭
             score = difflib.SequenceMatcher(None, t, a).ratio()
-            if score > best_score:
-                best_score = score
-                best_row = row
-                best_alias = alias
-    if best_row and best_score >= 0.62:
-        return {"guide_comment": best_row["guide_comment"], "matched_alias": best_alias}
-    return {"guide_comment": None, "matched_alias": None}
+            if score >= 0.62:
+                scored_candidates.append((score, row["guide_comment"], alias))
+    if scored_candidates:
+        scored_candidates.sort(key=lambda x: x[0], reverse=True)
+        top_n = scored_candidates[:3]
+        for _, comment, alias in top_n:
+            matched_comments.append(comment)
+            matched_aliases.append(alias)
+    uniq_comments = list(dict.fromkeys([c for c in matched_comments if c]))
+    uniq_aliases = list(dict.fromkeys([a for a in matched_aliases if a]))
+    return {
+        "guide_comment": " / ".join(uniq_comments) if uniq_comments else None,
+        "matched_alias": ", ".join(uniq_aliases) if uniq_aliases else None,
+        "guide_comments": uniq_comments,
+        "matched_aliases": uniq_aliases,
+    }
 
 
 def _clean_text(s: str) -> str:
@@ -1012,6 +1023,8 @@ async def upload_pdf(
                 guide = _match_guide_comment(entry["item"])
                 entry["guide_comment"] = guide["guide_comment"]
                 entry["matched_alias"] = guide["matched_alias"]
+                entry["guide_comments"] = guide.get("guide_comments", [])
+                entry["matched_aliases"] = guide.get("matched_aliases", [])
                 out.append(entry)
             return out
 
@@ -1616,6 +1629,28 @@ async def cancel_request(request_id: int, requester_id: str):
         if not req_res.data:
             raise HTTPException(status_code=404, detail="요청 건을 찾을 수 없습니다.")
         status = req_res.data[0].get("status")
+        if status == "draft":
+            detail_res = (
+                supabase.table("repair_requests")
+                .select("original_pdf_path, masked_pdf_path")
+                .eq("repair_request_id", request_id)
+                .limit(1)
+                .execute()
+            )
+            row = detail_res.data[0] if detail_res.data else {}
+            try:
+                if row.get("original_pdf_path"):
+                    supabase.storage.from_(ORIGINAL_BUCKET).remove([row["original_pdf_path"]])
+            except Exception:
+                pass
+            try:
+                if row.get("masked_pdf_path"):
+                    supabase.storage.from_(MASKED_BUCKET).remove([row["masked_pdf_path"]])
+            except Exception:
+                pass
+            supabase.table("bids").delete().eq("repair_request_id", request_id).execute()
+            supabase.table("repair_requests").delete().eq("repair_request_id", request_id).execute()
+            return {"status": "success"}
         if status not in ["requested", "bidding"]:
             raise HTTPException(status_code=400, detail="현재 상태에서는 취소할 수 없습니다.")
         supabase.table("repair_requests").update({"status": "cancelled"}).eq("repair_request_id", request_id).execute()

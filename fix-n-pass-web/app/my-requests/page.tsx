@@ -89,11 +89,11 @@ export default function MyRequestsPage() {
                   <div className="flex justify-between items-center mb-4">
                     <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-black tracking-wide uppercase
                       ${req.status === 'requested' ? 'bg-blue-100 text-blue-700' : 
-                        req.status === 'pending' ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
-                      {req.status === 'pending' && <AlertTriangle className="w-3 h-3" />}
+                        req.status === 'draft' ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
+                      {req.status === 'draft' && <AlertTriangle className="w-3 h-3" />}
                       <Clock className="w-3 h-3" />
                       {req.status === 'requested' ? '견적 대기 중' : 
-                       req.status === 'pending' ? '작성 중(임시저장)' : req.status}
+                       req.status === 'draft' ? '견적 요청 비정상' : req.status}
                     </div>
                     <span className="text-sm font-medium text-slate-400">
                       {new Date(req.created_at).toLocaleDateString('ko-KR')}

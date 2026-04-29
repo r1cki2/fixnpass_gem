@@ -124,13 +124,13 @@ export default function RequestDetailPage() {
                 </div>
              ))}
           </div>
-          {(reqData.status === "requested" || reqData.status === "bidding") && (
+          {(reqData.status === "requested" || reqData.status === "bidding" || reqData.status === "draft") && (
             <div className="mt-6">
               <button
                 onClick={handleCancelRequest}
                 className="px-4 py-2 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 font-semibold text-sm"
               >
-                견적 요청 취소
+                {reqData.status === "draft" ? "요청 내역 삭제" : "견적 요청 취소"}
               </button>
             </div>
           )}

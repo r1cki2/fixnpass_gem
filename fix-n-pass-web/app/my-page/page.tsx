@@ -143,6 +143,9 @@ export default function MyPage() {
                   setRegionsInput(next.join(", "));
                 }}
               />
+              <p className="text-xs text-slate-500 mt-2">
+                관심지역으로 등록된 곳에서 견적 요청이 있으면 이메일로 안내해드리겠습니다.
+              </p>
               <div className="flex flex-wrap gap-2 mt-3">
                 {serviceRegions.map((r) => (
                   <button
