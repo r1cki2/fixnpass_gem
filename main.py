@@ -989,7 +989,7 @@ async def upload_pdf(
                 status_code=409,
                 detail=(
                     "동일한 견적서로 이미 진행 중인 요청이 있어 마감기한 전에는 다시 요청할 수 없습니다. "
-                    "기존 요청 마감 후 다시 시도하거나, 기존 요청을 삭제한 뒤 재등록해주세요."
+                    "기존 요청 마감 후 다시 시도하거나, 기존 견적 요청건을 삭제하시거나 관리자에게 문의해주세요."
                 ),
             )
         should_check_pair_consistency = len(pdf_payloads) >= 2
