@@ -17,6 +17,7 @@ export default function IntroPage() {
   const [user, setUser] = useState<any>(null);
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [isRequesting, setIsRequesting] = useState(false);
+  const [isRedirectingAfterRequest, setIsRedirectingAfterRequest] = useState(false);
   const [role, setRole] = useState<string | null>(null);
   
   const router = useRouter();
@@ -194,9 +195,10 @@ export default function IntroPage() {
         const errorData = await res.json();
         throw new Error(errorData.detail || '업데이트 실패');
       }
-      
-      alert('성공적으로 견적 요청이 완료되었습니다.\n\n견적 요청 마감 기한은 2주입니다.');
-      router.push('/my-requests');
+      setIsRedirectingAfterRequest(true);
+      setTimeout(() => {
+        router.push('/my-requests');
+      }, 700);
       
     } catch (error: any) {
       console.error('Final request error:', error);
@@ -360,12 +362,16 @@ export default function IntroPage() {
           </section>
         )}
       </main>
-      {(isUploading || isRequesting) && (
+      {(isUploading || isRequesting || isRedirectingAfterRequest) && (
         <div className="fixed inset-0 z-50 bg-black/20 backdrop-blur-[1px] flex items-center justify-center">
           <div className="bg-white border rounded-xl px-5 py-4 shadow-xl flex items-center gap-3">
             <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
             <p className="text-sm font-semibold text-slate-700">
-              {isUploading ? "AI 분석을 진행하고 있습니다..." : "견적 요청을 처리하고 있습니다..."}
+              {isUploading
+                ? "AI 분석을 진행하고 있습니다..."
+                : isRedirectingAfterRequest
+                  ? "견적 요청이 완료되어 내역 화면으로 이동 중입니다..."
+                  : "견적 요청을 처리하고 있습니다..."}
             </p>
           </div>
         </div>

@@ -2,6 +2,7 @@ import functools
 import asyncio
 import csv
 import difflib
+import hashlib
 import json
 import logging
 import smtplib
@@ -314,6 +315,11 @@ async def _post_gemini_with_retry(payload: dict, max_attempts: int = 4) -> dict:
             last_error = msg
             retryable = ai_res.status_code in [429, 500, 502, 503, 504] or "high demand" in msg.lower()
             if attempt >= max_attempts or not retryable:
+                if retryable or "high demand" in msg.lower():
+                    raise HTTPException(
+                        status_code=503,
+                        detail="현재 Gemini 서버 과부하로 분석 요청이 지연되고 있습니다. 잠시 후 다시 시도해주세요.",
+                    )
                 raise HTTPException(status_code=500, detail=f"AI 분석 실패: {msg}")
         except HTTPException:
             raise
@@ -323,6 +329,12 @@ async def _post_gemini_with_retry(payload: dict, max_attempts: int = 4) -> dict:
                 break
         base = 0.8 * (2 ** (attempt - 1))
         await asyncio.sleep(base + random.uniform(0.15, 1.1))
+    err = (last_error or "").lower()
+    if "high demand" in err or "429" in err or "503" in err:
+        raise HTTPException(
+            status_code=503,
+            detail="현재 Gemini 서버 과부하로 분석 요청이 지연되고 있습니다. 잠시 후 다시 시도해주세요.",
+        )
     raise HTTPException(status_code=500, detail=f"AI 분석 실패: {last_error or '일시적 오류'}")
 
 
@@ -523,6 +535,28 @@ def _pdf_concat(pdf_list: list[bytes]) -> bytes:
     return out
 
 
+def _document_fingerprint(comprehensive_text: str, visual_text: str) -> str:
+    # 텍스트 원문 동일성 기준(파일명 무관)으로 판단
+    raw = f"{comprehensive_text}\n<<VISUAL_BRIEFING>>\n{visual_text}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _has_open_duplicate_fingerprint(fingerprint: str) -> bool:
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    rows = (
+        supabase.table("repair_requests")
+        .select("repair_request_id, status, quote_deadline_at, parsed_data")
+        .in_("status", ["requested", "bidding", "matched", "repairing", "completed"])
+        .gt("quote_deadline_at", now_iso)
+        .execute()
+    )
+    for r in rows.data or []:
+        parsed = r.get("parsed_data") or {}
+        if isinstance(parsed, dict) and parsed.get("document_fingerprint") == fingerprint:
+            return True
+    return False
+
+
 def _send_mail(to_email: str, subject: str, body: str):
     if not (MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS):
         raise RuntimeError("SMTP env is not configured")
@@ -612,7 +646,16 @@ def _enqueue_and_maybe_send(event_type: str, user_id: str, payload: dict):
                 f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
                 f"- 견적 ID: {payload.get('bid_id')}\n"
                 f"- 견적 금액: {payload.get('bid_amount')}\n\n"
+                "견적 제출 업체들은 보수업을 정식으로 등록하고 법정 보수원 교육을 이수한 업체입니다.\n\n"
                 "내 요청 내역에서 상세 견적을 확인해 주세요."
+            )
+        elif event_type == "request_submitted_notice":
+            subject = "[Fix&Pass] 견적 요청이 접수되었습니다"
+            body = (
+                "요청하신 견적이 정상 접수되었습니다.\n\n"
+                f"- 수리요청 ID: {payload.get('repair_request_id')}\n\n"
+                "견적 제출 업체들은 보수업을 정식으로 등록하고 법정 보수원 교육을 이수한 업체입니다.\n"
+                "내 요청 내역에서 접수 상태를 확인해 주세요."
             )
         else:
             subject = "[Fix&Pass] 알림"
@@ -938,21 +981,29 @@ async def upload_pdf(
                 detail="비주얼브리핑도 함께 업로드가 필요합니다. 필요시 한국교통안전공단에 요청해주세요.",
             )
 
-        merged_original = _pdf_concat(full_input_bytes)
-        supabase.storage.from_(ORIGINAL_BUCKET).upload(
-            path=original_path,
-            file=merged_original,
-            file_options={"content-type": "application/pdf"},
-        )
-
         comprehensive_text = "\n".join(_pdf_pages_text(comprehensive_bytes))
         visual_text = "\n".join(_pdf_pages_text(visual_bytes))
+        fingerprint = _document_fingerprint(comprehensive_text, visual_text)
+        if _has_open_duplicate_fingerprint(fingerprint):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "동일한 견적서로 이미 진행 중인 요청이 있어 마감기한 전에는 다시 요청할 수 없습니다. "
+                    "기존 요청 마감 후 다시 시도하거나, 기존 요청을 삭제한 뒤 재등록해주세요."
+                ),
+            )
         should_check_pair_consistency = len(pdf_payloads) >= 2
         if should_check_pair_consistency and not await _is_same_case_documents(comprehensive_text, visual_text):
             raise HTTPException(
                 status_code=400,
                 detail="같은 건에 대해 제공된 종합의견서와 비주얼브리핑을 업로드 해주세요.",
             )
+        merged_original = _pdf_concat(full_input_bytes)
+        supabase.storage.from_(ORIGINAL_BUCKET).upload(
+            path=original_path,
+            file=merged_original,
+            file_options={"content-type": "application/pdf"},
+        )
         rules = _load_analysis_rules_text()
         prompt = f"""
 다음은 기계식 주차장 검사 문서 분석 작업입니다.
@@ -1093,6 +1144,7 @@ async def upload_pdf(
                 "targets": redaction_targets,
                 "reason": "서비스 외 개인 접촉 가능성이 있는 식별 정보를 보수적으로 가림 처리",
             },
+            "document_fingerprint": fingerprint,
             "mandatory": [x["item"] for x in mandatory_repairs],
             "optional": [x["item"] for x in optional_repairs],
         }
@@ -1192,6 +1244,20 @@ async def update_request(req: UpdateRequest):
                         )
                 except Exception:
                     pass
+        if req.status == "requested":
+            requester_profile = _get_profile(req.requester_id) or {}
+            requester_name = requester_profile.get("name") or "수리요청인"
+            try:
+                _enqueue_and_maybe_send(
+                    "request_submitted_notice",
+                    req.requester_id,
+                    {
+                        "repair_request_id": req.repair_request_id,
+                        "requester_name": requester_name,
+                    },
+                )
+            except Exception:
+                pass
         return {"status": "success"}
     except HTTPException as e:
         raise e
