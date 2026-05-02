@@ -226,6 +226,24 @@ class MatchPartners(BaseModel):
     selected_bid_ids: List[int]
 
 
+class ContractorBidFinal(BaseModel):
+    bid_id: int
+    partner_id: str
+    site_visit_date: str
+    final_bid_amount: int
+    variance_reason: str
+    contractor_extra_note: Optional[str] = None
+
+
+class RequesterBidFields(BaseModel):
+    bid_id: int
+    requester_id: str
+    requester_site_visit_date: str
+    requester_final_bid_amount: int
+    requester_variance_note: Optional[str] = None
+    requester_visit_review: Optional[str] = None
+
+
 class AdminUserRoleUpdate(BaseModel):
     role: str
 
@@ -600,6 +618,15 @@ def _split_selected_items(parsed_data: Optional[dict], selected_items: Optional[
     return {"mandatory": sel_m, "optional": sel_o, "unspecified": sel_u}
 
 
+def _parse_iso_date_only(raw: str) -> str:
+    try:
+        s = (raw or "").strip()[:10]
+        datetime.strptime(s, "%Y-%m-%d")
+        return s
+    except Exception:
+        raise HTTPException(status_code=400, detail="날짜는 YYYY-MM-DD 형식으로 입력해주세요.")
+
+
 def _masked_partner_label(partner_id: str, request_id: int) -> str:
     digest = hashlib.sha256(
         f"{partner_id}:req:{request_id}:fixnpass_partner_mask".encode("utf-8")
@@ -632,6 +659,7 @@ def _document_fingerprint(comprehensive_text: str, visual_text: str) -> str:
 
 
 def _has_open_duplicate_fingerprint(fingerprint: str) -> bool:
+    """draft 상태는 스캔 대상에서 제외된다(게스트 임시 분석 건이 동일 PDF 차단을 유발하지 않음)."""
     now_iso = datetime.utcnow().isoformat() + "Z"
     rows = (
         supabase.table("repair_requests")
@@ -1998,14 +2026,14 @@ async def get_market_list(partner_id: str, request_status: Optional[str] = None,
 
 @app.get("/api/contractor/market/{request_id}")
 async def get_market_detail(request_id: int, partner_id: str):
-    """수리업체용 상세: 상세주소/원본PDF 비공개."""
+    """수리업체용 상세: 선정 전 상세주소 비공개, 선정 후 의뢰인 연락처 공개."""
     try:
         _require_active_role(partner_id, ["contractor"], "contractor")
         req_res = (
             supabase.table("repair_requests")
             .select(
-                "repair_request_id, status, region_summary, building_name, parking_type, "
-                "selected_items, selected_bid_ids, parsed_data, created_at, quote_deadline_at"
+                "repair_request_id, status, region_summary, building_name, address_detail, parking_type, "
+                "selected_items, selected_bid_ids, parsed_data, created_at, quote_deadline_at, requester_id"
             )
             .eq("repair_request_id", request_id)
             .execute()
@@ -2023,9 +2051,9 @@ async def get_market_detail(request_id: int, partner_id: str):
         data = req_res.data[0]
         data["my_bid"] = my_bid.data[0] if my_bid.data else None
         data["site_alias"] = _site_alias(request_id)
-        data["building_name"] = None
         selected_ids = data.get("selected_bid_ids", []) or []
         my_bid_id = data["my_bid"]["bid_id"] if data.get("my_bid") else None
+        st = data.get("status") or ""
         if not my_bid_id:
             data["my_bid_status"] = "미제출"
         elif my_bid_id in selected_ids:
@@ -2034,12 +2062,34 @@ async def get_market_detail(request_id: int, partner_id: str):
             data["my_bid_status"] = "견적 제출완료"
         if selected_ids and (not my_bid_id or my_bid_id not in selected_ids):
             data["my_bid_status"] = "타업체 선정됨"
-        data["request_stage_kr"] = _request_stage_kr(data.get("status", ""))
+        data["request_stage_kr"] = _request_stage_kr(st)
         pd = data.get("parsed_data")
         spl = _split_selected_items(pd if isinstance(pd, dict) else None, data.get("selected_items"))
         data["selected_items_mandatory"] = spl["mandatory"]
         data["selected_items_optional"] = spl["optional"]
         data["selected_items_unspecified"] = spl["unspecified"]
+
+        show_contact = bool(
+            my_bid_id
+            and my_bid_id in selected_ids
+            and st in ("matched", "repairing", "completed")
+        )
+        data["show_requester_contact"] = show_contact
+        data["requester_contact"] = None
+        if show_contact:
+            rid = data.get("requester_id")
+            prof = _get_profile(rid) if rid else None
+            pn = (prof or {}).get("phone_number") or ""
+            op = (prof or {}).get("office_phone_number") or ""
+            data["requester_contact"] = {
+                "phone_number": pn if pn else "미등록",
+                "office_phone_number": op if op else "",
+                "building_name": data.get("building_name") or "건물명 미확인",
+                "address_detail": data.get("address_detail") or "",
+                "region_summary": data.get("region_summary") or "",
+            }
+        data["building_name"] = None
+        data["address_detail"] = None
         return {"status": "success", "data": data}
     except HTTPException as e:
         raise e
@@ -2188,6 +2238,109 @@ async def match_partners(data: MatchPartners):
                     },
                 )
         return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/contractor/bids/final-quote")
+async def contractor_submit_final_quote(body: ContractorBidFinal):
+    """선정된 업체가 현장 내방·최종 견적 정보를 제출한다."""
+    try:
+        _rate_limit("contractor_final_quote", body.partner_id)
+        _require_active_role(body.partner_id, ["contractor"], "contractor")
+        if body.final_bid_amount <= 0:
+            raise HTTPException(status_code=400, detail="최종견적액은 0보다 커야 합니다.")
+        vr = (body.variance_reason or "").strip()
+        if len(vr) < 2:
+            raise HTTPException(status_code=400, detail="최초 견적 대비 변동 사유를 입력해주세요.")
+        bid_res = (
+            supabase.table("bids")
+            .select("bid_id, partner_id, repair_request_id")
+            .eq("bid_id", body.bid_id)
+            .eq("partner_id", body.partner_id)
+            .limit(1)
+            .execute()
+        )
+        if not bid_res.data:
+            raise HTTPException(status_code=404, detail="견적 정보를 찾을 수 없습니다.")
+        rr_res = (
+            supabase.table("repair_requests")
+            .select("repair_request_id, status, selected_bid_ids")
+            .eq("repair_request_id", bid_res.data[0]["repair_request_id"])
+            .limit(1)
+            .execute()
+        )
+        if not rr_res.data:
+            raise HTTPException(status_code=404, detail="요청을 찾을 수 없습니다.")
+        rr = rr_res.data[0]
+        if rr.get("status") not in ("matched", "repairing", "completed"):
+            raise HTTPException(status_code=400, detail="매칭 완료된 건만 최종 정보를 제출할 수 있습니다.")
+        sel = rr.get("selected_bid_ids") or []
+        if body.bid_id not in sel:
+            raise HTTPException(status_code=403, detail="선정된 견적만 제출할 수 있습니다.")
+        visit = _parse_iso_date_only(body.site_visit_date)
+        supabase.table("bids").update(
+            {
+                "site_visit_date": visit,
+                "final_bid_amount": int(body.final_bid_amount),
+                "variance_reason": vr,
+                "contractor_extra_note": (body.contractor_extra_note or "").strip() or None,
+                "bid_progress_updated_at": datetime.utcnow().isoformat() + "Z",
+            }
+        ).eq("bid_id", body.bid_id).execute()
+        return {"status": "success"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/my-requests/{request_id}/bids/{bid_id}/requester-fields")
+async def requester_submit_bid_fields(request_id: int, bid_id: int, body: RequesterBidFields):
+    """의뢰인이 선정 업체에 대한 내방·최종 견적 확인 정보를 남긴다."""
+    try:
+        _rate_limit("requester_bid_fields", body.requester_id)
+        _require_active_role(body.requester_id, ["requester"], "requester")
+        if body.bid_id != bid_id:
+            raise HTTPException(status_code=400, detail="bid_id가 일치하지 않습니다.")
+        if body.requester_final_bid_amount <= 0:
+            raise HTTPException(status_code=400, detail="최종견적액은 0보다 커야 합니다.")
+        rr_res = (
+            supabase.table("repair_requests")
+            .select("repair_request_id, requester_id, status, selected_bid_ids")
+            .eq("repair_request_id", request_id)
+            .limit(1)
+            .execute()
+        )
+        if not rr_res.data or rr_res.data[0].get("requester_id") != body.requester_id:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+        rr = rr_res.data[0]
+        sel = rr.get("selected_bid_ids") or []
+        if bid_id not in sel:
+            raise HTTPException(status_code=400, detail="선정된 업체 견적만 입력할 수 있습니다.")
+        bid_chk = (
+            supabase.table("bids")
+            .select("bid_id")
+            .eq("bid_id", bid_id)
+            .eq("repair_request_id", request_id)
+            .limit(1)
+            .execute()
+        )
+        if not bid_chk.data:
+            raise HTTPException(status_code=404, detail="견적을 찾을 수 없습니다.")
+        visit = _parse_iso_date_only(body.requester_site_visit_date)
+        supabase.table("bids").update(
+            {
+                "requester_site_visit_date": visit,
+                "requester_final_bid_amount": int(body.requester_final_bid_amount),
+                "requester_variance_note": (body.requester_variance_note or "").strip() or None,
+                "requester_visit_review": (body.requester_visit_review or "").strip() or None,
+                "bid_progress_updated_at": datetime.utcnow().isoformat() + "Z",
+            }
+        ).eq("bid_id", bid_id).execute()
+        return {"status": "success"}
+    except HTTPException as e:
+        raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Building2, Clock, CheckSquare, ArrowLeft, Receipt, Star, Phone, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Building2, Clock, CheckSquare, ArrowLeft, Receipt, Star, Phone, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 
@@ -16,6 +16,10 @@ export default function RequestDetailPage() {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
+  const [savingBidId, setSavingBidId] = useState<number | null>(null);
+  const [requesterFields, setRequesterFields] = useState<
+    Record<number, { visit: string; amount: string; variance: string; review: string }>
+  >({});
 
   useEffect(() => {
     const fetchData = async () => {
@@ -45,8 +49,22 @@ export default function RequestDetailPage() {
       const bidJson = await bidRes.json();
       
       setReqData(reqJson.data);
-      setBids(bidJson.data);
+      const bidList = bidJson.data || [];
+      setBids(bidList);
       setSelectedIds(reqJson.data.selected_bid_ids || []);
+      const rf: Record<number, { visit: string; amount: string; variance: string; review: string }> = {};
+      for (const b of bidList) {
+        rf[b.bid_id] = {
+          visit: b.requester_site_visit_date ? String(b.requester_site_visit_date).slice(0, 10) : "",
+          amount:
+            b.requester_final_bid_amount != null && b.requester_final_bid_amount !== undefined
+              ? String(b.requester_final_bid_amount)
+              : "",
+          variance: b.requester_variance_note || "",
+          review: b.requester_visit_review || "",
+        };
+      }
+      setRequesterFields(rf);
       setLoading(false);
     };
     fetchData();
@@ -63,8 +81,21 @@ export default function RequestDetailPage() {
     });
   };
 
+  const toDigits = (v: string) => v.replace(/[^0-9]/g, "");
+  const formatWon = (v: string) => {
+    const d = toDigits(v);
+    if (!d) return "";
+    return Number(d).toLocaleString("ko-KR");
+  };
+
   const handleMatch = async () => {
     if (!userId) return alert('로그인이 필요합니다.');
+    if (selectedIds.length === 1) {
+      const ok = confirm(
+        "수리 업체의 과도한 현장방문을 방지하고자 최대 2개 업체 까지만 선택 가능하며, 1개만 선택하신 경우 추후 추가 선택은 불가합니다. 신중히 선택해주세요.\n\n선택한 1개 업체로 최종 매칭을 진행할까요?"
+      );
+      if (!ok) return;
+    }
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
     const res = await fetch(`${baseUrl}/api/match-partners`, {
       method: 'POST',
@@ -79,6 +110,44 @@ export default function RequestDetailPage() {
     if (res.ok) {
       alert("선택한 업체와 매칭되었습니다. 이제 연락처를 확인하실 수 있습니다.");
       window.location.reload();
+    } else {
+      const j = await res.json().catch(() => ({}));
+      alert(j.detail || "매칭 처리에 실패했습니다.");
+    }
+  };
+
+  const saveRequesterFields = async (bidId: number) => {
+    if (!userId) return;
+    const row = requesterFields[bidId];
+    if (!row) return;
+    const vd = row.visit.trim();
+    const amt = toDigits(row.amount);
+    if (!vd) return alert("현장 내방 일자를 입력해주세요.");
+    if (!amt) return alert("최종견적액을 입력해주세요.");
+    setSavingBidId(bidId);
+    try {
+      const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+      const res = await fetch(`${baseUrl}/api/my-requests/${requestId}/bids/${bidId}/requester-fields`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bid_id: bidId,
+          requester_id: userId,
+          requester_site_visit_date: vd,
+          requester_final_bid_amount: Number(amt),
+          requester_variance_note: row.variance.trim() || null,
+          requester_visit_review: row.review.trim() || null,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(json.detail || "저장에 실패했습니다.");
+        return;
+      }
+      alert("저장되었습니다.");
+      window.location.reload();
+    } finally {
+      setSavingBidId(null);
     }
   };
 
@@ -96,6 +165,7 @@ export default function RequestDetailPage() {
   };
 
   if (loading) return <div className="min-h-screen flex items-center justify-center">로딩 중...</div>;
+  if (!reqData) return <div className="min-h-screen flex items-center justify-center">데이터가 없습니다.</div>;
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 pb-20">
@@ -222,12 +292,98 @@ export default function RequestDetailPage() {
                 </div>
 
                 {reqData.status !== 'matched' && (
-                  <button 
-                    onClick={() => toggleSelect(bid.bid_id)}
-                    className={`w-full py-4 rounded-2xl font-black transition-all flex items-center justify-center gap-2 ${selectedIds.includes(bid.bid_id) ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-                  >
-                    {selectedIds.includes(bid.bid_id) ? <><CheckCircle2 className="w-5 h-5" /> 선택됨</> : '이 업체 선택하기'}
-                  </button>
+                  <label className={`flex items-center gap-3 w-full cursor-pointer rounded-2xl border-2 px-4 py-4 font-black transition-all ${selectedIds.includes(bid.bid_id) ? 'border-blue-600 bg-blue-50 text-blue-900' : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'} ${!selectedIds.includes(bid.bid_id) && selectedIds.length >= 2 ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                    <input
+                      type="checkbox"
+                      className="w-5 h-5 rounded border-slate-300 shrink-0"
+                      checked={selectedIds.includes(bid.bid_id)}
+                      disabled={!selectedIds.includes(bid.bid_id) && selectedIds.length >= 2}
+                      onChange={() => toggleSelect(bid.bid_id)}
+                    />
+                    <span>{selectedIds.includes(bid.bid_id) ? "선정함 (최대 2개 동시 선택)" : "이 업체 선정하기"}</span>
+                  </label>
+                )}
+
+                {reqData.status === 'matched' && bid.is_selected && (
+                  <div className="mt-6 space-y-4 border-t border-slate-100 pt-6">
+                    {(bid.site_visit_date || bid.final_bid_amount != null) && (
+                      <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 text-sm space-y-2">
+                        <p className="text-xs font-black text-slate-500 uppercase">업체가 제출한 정보</p>
+                        {bid.site_visit_date ? (
+                          <p><span className="font-bold text-slate-600">내방 일자:</span> {String(bid.site_visit_date).slice(0, 10)}</p>
+                        ) : null}
+                        {bid.final_bid_amount != null ? (
+                          <p><span className="font-bold text-slate-600">최종견적액:</span> {Number(bid.final_bid_amount).toLocaleString()}원</p>
+                        ) : null}
+                        {bid.variance_reason ? (
+                          <p><span className="font-bold text-slate-600">변동 사유:</span> {bid.variance_reason}</p>
+                        ) : null}
+                        {bid.contractor_extra_note ? (
+                          <p><span className="font-bold text-slate-600">업체 메모:</span> {bid.contractor_extra_note}</p>
+                        ) : null}
+                      </div>
+                    )}
+                    <div className="rounded-2xl border border-blue-200 bg-blue-50/50 p-5 space-y-3">
+                      <p className="font-black text-slate-900 text-sm">내 확인 사항 (선정 업체)</p>
+                      <label className="block text-xs font-bold text-slate-600">현장 내방 일자 (필수)</label>
+                      <input
+                        type="date"
+                        value={requesterFields[bid.bid_id]?.visit ?? ""}
+                        onChange={(e) =>
+                          setRequesterFields((prev) => {
+                            const cur = prev[bid.bid_id] || { visit: "", amount: "", variance: "", review: "" };
+                            return { ...prev, [bid.bid_id]: { ...cur, visit: e.target.value } };
+                          })
+                        }
+                        className="w-full border rounded-xl px-3 py-2 text-sm font-semibold"
+                      />
+                      <label className="block text-xs font-bold text-slate-600">최종견적액 (필수)</label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={formatWon(requesterFields[bid.bid_id]?.amount ?? "")}
+                        onChange={(e) =>
+                          setRequesterFields((prev) => {
+                            const cur = prev[bid.bid_id] || { visit: "", amount: "", variance: "", review: "" };
+                            return { ...prev, [bid.bid_id]: { ...cur, amount: formatWon(e.target.value) } };
+                          })
+                        }
+                        className="w-full border rounded-xl px-3 py-2 text-base font-black"
+                      />
+                      <label className="block text-xs font-bold text-slate-600">변동 사유 메모 (선택)</label>
+                      <textarea
+                        rows={2}
+                        value={requesterFields[bid.bid_id]?.variance ?? ""}
+                        onChange={(e) =>
+                          setRequesterFields((prev) => {
+                            const cur = prev[bid.bid_id] || { visit: "", amount: "", variance: "", review: "" };
+                            return { ...prev, [bid.bid_id]: { ...cur, variance: e.target.value } };
+                          })
+                        }
+                        className="w-full border rounded-xl px-3 py-2 text-sm"
+                      />
+                      <label className="block text-xs font-bold text-slate-600">업체 현장 내방 후기 (선택)</label>
+                      <textarea
+                        rows={2}
+                        value={requesterFields[bid.bid_id]?.review ?? ""}
+                        onChange={(e) =>
+                          setRequesterFields((prev) => {
+                            const cur = prev[bid.bid_id] || { visit: "", amount: "", variance: "", review: "" };
+                            return { ...prev, [bid.bid_id]: { ...cur, review: e.target.value } };
+                          })
+                        }
+                        className="w-full border rounded-xl px-3 py-2 text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => saveRequesterFields(bid.bid_id)}
+                        disabled={savingBidId === bid.bid_id}
+                        className="w-full py-3 rounded-xl bg-blue-600 text-white font-black disabled:bg-slate-400"
+                      >
+                        {savingBidId === bid.bid_id ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : "내 확인 정보 저장"}
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             ))

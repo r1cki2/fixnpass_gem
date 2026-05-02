@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, CheckCircle2, DollarSign, Send, Loader2, Info, AlertTriangle, Lock } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, DollarSign, Send, Loader2, Info, AlertTriangle, Lock, Phone, Building2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 export default function ContractorBidPage() {
@@ -25,40 +25,96 @@ export default function ContractorBidPage() {
   const [isMatched, setIsMatched] = useState(false);
   const [partnerId, setPartnerId] = useState<string | null>(null);
 
-  useEffect(() => {
-    const fetchDetail = async () => {
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user?.id) {
-          router.push('/login');
-          return;
-        }
-        setPartnerId(user.id);
-        const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-        const res = await fetch(`${baseUrl}/api/contractor/market/${requestId}?partner_id=${user.id}`);
-        const result = await res.json();
-        
-        if (result.data) {
-          setReq(result.data);
-          const matched = ['matched', 'repairing', 'completed'].includes(result.data.status);
-          setIsMatched(matched);
-          if (matched) setCanEdit(false);
+  const [progVisit, setProgVisit] = useState("");
+  const [progFinal, setProgFinal] = useState("");
+  const [progVar, setProgVar] = useState("");
+  const [progExtra, setProgExtra] = useState("");
+  const [savingProgress, setSavingProgress] = useState(false);
 
-          if (result.data.my_bid) {
-            setHasBid(true);
-            setAmount(result.data.my_bid.bid_amount.toString());
-            // 수정 횟수가 1 이상이거나 매칭된 경우 수정 불가
-            if (result.data.my_bid.edit_count >= 1 || matched) {
-              setCanEdit(false);
-            }
+  const loadDetail = useCallback(async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.id) {
+        router.push('/login');
+        return;
+      }
+      setPartnerId(user.id);
+      const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+      const res = await fetch(`${baseUrl}/api/contractor/market/${requestId}?partner_id=${user.id}`);
+      const result = await res.json();
+
+      if (result.data) {
+        setReq(result.data);
+        const matched = ['matched', 'repairing', 'completed'].includes(result.data.status);
+        setIsMatched(matched);
+        if (matched) setCanEdit(false);
+
+        if (result.data.my_bid) {
+          setHasBid(true);
+          setAmount(result.data.my_bid.bid_amount.toString());
+          if (result.data.my_bid.edit_count >= 1 || matched) {
+            setCanEdit(false);
           }
         }
-      } catch (error) {
-        console.error(error);
       }
-    };
-    fetchDetail();
+    } catch (error) {
+      console.error(error);
+    }
   }, [requestId, router]);
+
+  useEffect(() => {
+    loadDetail();
+  }, [loadDetail]);
+
+  useEffect(() => {
+    const b = req?.my_bid;
+    if (!b) return;
+    setProgVisit(b.site_visit_date ? String(b.site_visit_date).slice(0, 10) : "");
+    setProgFinal(b.final_bid_amount != null ? String(b.final_bid_amount) : "");
+    setProgVar(b.variance_reason || "");
+    setProgExtra(b.contractor_extra_note || "");
+  }, [
+    req?.my_bid?.bid_id,
+    req?.my_bid?.site_visit_date,
+    req?.my_bid?.final_bid_amount,
+    req?.my_bid?.variance_reason,
+    req?.my_bid?.contractor_extra_note,
+  ]);
+
+  const saveFinalQuote = async () => {
+    if (!partnerId || !req?.my_bid?.bid_id) return;
+    const vd = progVisit.trim();
+    const digits = toDigits(progFinal);
+    const vr = progVar.trim();
+    if (!vd) return alert("현장 내방 일자를 입력해주세요.");
+    if (!digits) return alert("최종견적액을 입력해주세요.");
+    if (vr.length < 2) return alert("최초 견적 대비 변동 사유를 입력해주세요.");
+    setSavingProgress(true);
+    try {
+      const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+      const res = await fetch(`${baseUrl}/api/contractor/bids/final-quote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bid_id: req.my_bid.bid_id,
+          partner_id: partnerId,
+          site_visit_date: vd,
+          final_bid_amount: Number(digits),
+          variance_reason: vr,
+          contractor_extra_note: progExtra.trim() || null,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(json.detail || "저장에 실패했습니다.");
+        return;
+      }
+      alert("저장되었습니다. 플랫폼에 최종 견적 정보가 반영되었습니다.");
+      await loadDetail();
+    } finally {
+      setSavingProgress(false);
+    }
+  };
 
   const handleSubmitBid = async () => {
     // 팝업 안내 로직 추가
@@ -169,6 +225,85 @@ export default function ContractorBidPage() {
               </span>
             )}
           </div>
+
+          {req.show_requester_contact && req.requester_contact && (
+            <div className="mb-10 space-y-4">
+              <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/80 p-6">
+                <h3 className="text-sm font-black text-emerald-800 uppercase tracking-widest mb-3">수리 의뢰인 연락처·현장</h3>
+                <div className="grid sm:grid-cols-2 gap-3 text-sm">
+                  <div className="flex items-start gap-2">
+                    <Phone className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-[11px] font-bold text-emerald-700">휴대폰</p>
+                      <p className="font-black text-slate-900">{req.requester_contact.phone_number}</p>
+                    </div>
+                  </div>
+                  {req.requester_contact.office_phone_number ? (
+                    <div className="flex items-start gap-2">
+                      <Phone className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-[11px] font-bold text-emerald-700">사무실</p>
+                        <p className="font-black text-slate-900">{req.requester_contact.office_phone_number}</p>
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="flex items-start gap-2 sm:col-span-2">
+                    <Building2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-[11px] font-bold text-emerald-700">건물명 · 상세주소</p>
+                      <p className="font-bold text-slate-900">{req.requester_contact.building_name}</p>
+                      <p className="text-slate-700 mt-1">{req.requester_contact.region_summary} {req.requester_contact.address_detail}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-900 leading-relaxed">
+                수리 요청인께 연락하시어 내방 일정을 잡으시고, 내방 및 검토 후 최종견적액을 저희에게도 알려주세요.
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6 space-y-4">
+                <h4 className="font-black text-slate-900">최종 견적 · 현장 내방 정보 등록</h4>
+                <label className="block text-xs font-bold text-slate-600">최종견적액 산정 위한 현장 내방 일자 (필수)</label>
+                <input
+                  type="date"
+                  value={progVisit}
+                  onChange={(e) => setProgVisit(e.target.value)}
+                  className="w-full border rounded-xl px-4 py-3 text-sm font-semibold"
+                />
+                <label className="block text-xs font-bold text-slate-600">최종견적액 (필수)</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={formatWon(progFinal)}
+                  onChange={(e) => setProgFinal(formatWon(e.target.value))}
+                  placeholder="금액 (원)"
+                  className="w-full border rounded-xl px-4 py-3 text-lg font-black"
+                />
+                <label className="block text-xs font-bold text-slate-600">최초견적액 대비 최종견적액 변동 사유 (필수)</label>
+                <textarea
+                  value={progVar}
+                  onChange={(e) => setProgVar(e.target.value)}
+                  rows={3}
+                  className="w-full border rounded-xl px-4 py-3 text-sm"
+                  placeholder="변동 사유를 입력해주세요."
+                />
+                <label className="block text-xs font-bold text-slate-600">현장 내방 후기 및 기타 의견 (선택)</label>
+                <textarea
+                  value={progExtra}
+                  onChange={(e) => setProgExtra(e.target.value)}
+                  rows={2}
+                  className="w-full border rounded-xl px-4 py-3 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={saveFinalQuote}
+                  disabled={savingProgress}
+                  className="w-full py-4 rounded-2xl bg-slate-900 text-white font-black disabled:bg-slate-400"
+                >
+                  {savingProgress ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : "최종 정보 저장"}
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="space-y-6 mb-10">
             <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest">수리 요청 항목</h3>
