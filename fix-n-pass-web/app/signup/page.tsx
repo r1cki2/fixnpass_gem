@@ -14,6 +14,7 @@ import {
   validateMobileNumber,
   validateOfficePhoneNumber,
 } from "@/lib/validation";
+import { submitPendingQuoteRequest } from "@/lib/pendingQuote";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -214,7 +215,17 @@ export default function SignupPage() {
 
     setMessage("회원가입이 완료되었습니다. 로그인 후 바로 이용하실 수 있습니다.");
     setIsLoading(false);
-    setTimeout(() => router.push(role === "contractor" ? "/contractor/market" : "/"), 800);
+    if (role === "contractor") {
+      setTimeout(() => router.push("/contractor/market"), 800);
+      return;
+    }
+    if (role === "requester") {
+      const pend = await submitPendingQuoteRequest(uid);
+      const dest = pend.ok ? "/my-requests" : "/";
+      setTimeout(() => router.push(dest), 800);
+      return;
+    }
+    setTimeout(() => router.push("/"), 800);
   };
 
   return (
@@ -446,7 +457,10 @@ export default function SignupPage() {
           {isLoading ? "처리 중..." : "회원가입"}
         </button>
 
-        <Link href="/login" className="text-center text-sm font-semibold text-blue-600 hover:underline">
+        <Link
+          href={role === "requester" ? "/login?next=%2Fmy-requests" : "/login"}
+          className="text-center text-sm font-semibold text-blue-600 hover:underline"
+        >
           이미 계정이 있나요? 로그인
         </Link>
       </form>

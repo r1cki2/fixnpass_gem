@@ -1,6 +1,7 @@
 import functools
 import asyncio
 import csv
+import threading
 import difflib
 import hashlib
 import json
@@ -465,11 +466,18 @@ def _load_guide_rows() -> list[dict]:
             reader = csv.DictReader(f)
             for r in reader:
                 aliases = []
-                for i in range(1, 8):
-                    v = (r.get(f"부적합 항목명{i}") or "").strip()
+                # v2 CSV: 키워드1..키워드6
+                for i in range(1, 7):
+                    v = (r.get(f"키워드{i}") or "").strip()
                     if v:
                         aliases.append(v)
-                comment = (r.get("가이드 코멘트") or "").strip()
+                # legacy v1: 부적합 항목명1..7
+                if not aliases:
+                    for i in range(1, 8):
+                        v = (r.get(f"부적합 항목명{i}") or "").strip()
+                        if v:
+                            aliases.append(v)
+                comment = (r.get("가이드 코멘트") or r.get("가이드코멘트") or "").strip()
                 if aliases and comment:
                     rows.append({"aliases": aliases, "guide_comment": comment})
     except Exception:
@@ -481,6 +489,8 @@ def _match_guide_comment(item: str) -> dict:
     t = re.sub(r"\s+", "", (item or "").lower())
     if not t:
         return {"guide_comment": None, "matched_alias": None, "guide_comments": [], "matched_aliases": []}
+    # 괄호 안 부가 표기(예: 시운전) 제거한 키 — CSV 키워드가 짧은 경우 매칭 보강
+    t_noparen = re.sub(r"\([^)]*\)", "", t)
     matched_comments: list[str] = []
     matched_aliases: list[str] = []
     scored_candidates: list[tuple[float, str, str]] = []
@@ -489,7 +499,7 @@ def _match_guide_comment(item: str) -> dict:
             a = re.sub(r"\s+", "", alias.lower())
             if not a:
                 continue
-            if a in t or t in a:
+            if a in t or t in a or a in t_noparen or t_noparen in a:
                 matched_comments.append(row["guide_comment"])
                 matched_aliases.append(alias)
                 continue
@@ -583,28 +593,10 @@ def _normalize_region_summary(address_text: str) -> str:
     return parts[0]
 
 
-def _enqueue_and_maybe_send(event_type: str, user_id: str, payload: dict):
-    try:
-        inserted = (
-            supabase.table("notification_queue")
-            .insert(
-                {
-                    "event_type": event_type,
-                    "user_id": user_id,
-                    "payload": payload,
-                    "status": "pending",
-                }
-            )
-            .execute()
-        )
-        n_id = inserted.data[0]["notification_id"] if inserted.data else None
-    except Exception as e:
-        logging.warning("notification_queue insert failed: %s", str(e))
-        return
-
+def _try_immediate_notification_mail(event_type: str, user_id: str, payload: dict, n_id: Optional[int]):
+    """큐 insert 이후 백그라운드에서 SMTP 시도(요청 응답 지연 방지)."""
     if not (MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS):
         return
-
     try:
         auth_user = supabase.auth.admin.get_user_by_id(user_id)
         email = getattr(getattr(auth_user, "user", None), "email", None)
@@ -661,10 +653,39 @@ def _enqueue_and_maybe_send(event_type: str, user_id: str, payload: dict):
             subject = "[Fix&Pass] 알림"
             body = f"새 알림이 도착했습니다. event_type={event_type}"
         _send_mail(email, subject, body)
-        if n_id:
+        if n_id is not None:
             supabase.table("notification_queue").update({"status": "sent"}).eq("notification_id", n_id).execute()
     except Exception as e:
         logging.warning("immediate mail send failed: %s", str(e))
+
+
+def _enqueue_and_maybe_send(event_type: str, user_id: str, payload: dict):
+    try:
+        inserted = (
+            supabase.table("notification_queue")
+            .insert(
+                {
+                    "event_type": event_type,
+                    "user_id": user_id,
+                    "payload": payload,
+                    "status": "pending",
+                }
+            )
+            .execute()
+        )
+        n_id = inserted.data[0]["notification_id"] if inserted.data else None
+    except Exception as e:
+        logging.warning("notification_queue insert failed: %s", str(e))
+        return
+
+    if not (MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS):
+        return
+
+    threading.Thread(
+        target=_try_immediate_notification_mail,
+        args=(event_type, user_id, payload, n_id),
+        daemon=True,
+    ).start()
 
 
 def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict, extra_sensitive_terms: Optional[list[str]] = None) -> bytes:

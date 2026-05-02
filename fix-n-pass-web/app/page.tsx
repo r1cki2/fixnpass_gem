@@ -195,6 +195,11 @@ export default function IntroPage() {
         const errorData = await res.json();
         throw new Error(errorData.detail || '업데이트 실패');
       }
+      alert(
+        "견적 요청이 접수되었습니다.\n\n" +
+          "견적 요청 마감 기한은 2주입니다.\n\n" +
+          "견적 제출 업체들은 보수업을 정식으로 등록하고 법정 보수원 교육을 이수한 업체입니다."
+      );
       setIsRedirectingAfterRequest(true);
       setTimeout(() => {
         router.push('/my-requests');

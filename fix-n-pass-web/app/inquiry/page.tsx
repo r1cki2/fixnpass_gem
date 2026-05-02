@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 
@@ -17,18 +17,24 @@ export default function InquiryListPage() {
   const [loggedIn, setLoggedIn] = useState(false);
   const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
 
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.auth.getSession();
-      const t = data.session?.access_token ?? null;
-      setLoggedIn(Boolean(t));
-      const headers: HeadersInit = {};
-      if (t) headers.Authorization = `Bearer ${t}`;
-      const res = await fetch(`${baseUrl}/api/inquiries`, { headers });
-      const json = await res.json();
-      setRows(json.data || []);
-    })();
+  const loadList = useCallback(async () => {
+    const { data } = await supabase.auth.getSession();
+    const t = data.session?.access_token ?? null;
+    setLoggedIn(Boolean(t));
+    const headers: HeadersInit = {};
+    if (t) headers.Authorization = `Bearer ${t}`;
+    const res = await fetch(`${baseUrl}/api/inquiries`, { headers });
+    const json = await res.json();
+    setRows(json.data || []);
   }, [baseUrl]);
+
+  useEffect(() => {
+    void loadList();
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      void loadList();
+    });
+    return () => sub.subscription.unsubscribe();
+  }, [loadList]);
 
   return (
     <div className="max-w-3xl mx-auto py-10 px-4">

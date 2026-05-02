@@ -35,6 +35,8 @@ function LoginForm() {
       return;
     }
 
+    await supabase.auth.getSession();
+
     const uid = data.user?.id;
     if (uid) {
       const pending = await submitPendingQuoteRequest(uid);
