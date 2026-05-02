@@ -1,19 +1,32 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { supabase } from "@/lib/supabase";
 
-export default function PartnerDetailPage() {
+function PartnerDetailInner() {
   const params = useParams();
   const router = useRouter();
-  const partnerId = params.id;
+  const searchParams = useSearchParams();
+  const partnerId = params.id as string;
+  const requestId = searchParams.get("request_id");
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const run = async () => {
       const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-      const res = await fetch(`${baseUrl}/api/partner/${partnerId}`);
+      let url = `${baseUrl}/api/partner/${partnerId}`;
+      if (requestId) url += `?request_id=${encodeURIComponent(requestId)}`;
+
+      const headers: HeadersInit = {};
+      if (requestId) {
+        const { data: sess } = await supabase.auth.getSession();
+        const t = sess.session?.access_token;
+        if (t) headers.Authorization = `Bearer ${t}`;
+      }
+
+      const res = await fetch(url, { headers });
       const json = await res.json();
       if (!res.ok) {
         alert(json.detail || "업체 정보를 불러오지 못했습니다.");
@@ -24,7 +37,7 @@ export default function PartnerDetailPage() {
       setLoading(false);
     };
     run();
-  }, [partnerId, router]);
+  }, [partnerId, requestId, router]);
 
   if (loading) return <div className="min-h-screen flex items-center justify-center">로딩 중...</div>;
 
@@ -46,11 +59,19 @@ export default function PartnerDetailPage() {
           />
           <InfoItem label="업력" value={data.years_experience ? `${data.years_experience}년` : "정보 미등록"} />
           <InfoItem label="직원수" value={data.employee_count ? `${data.employee_count}명` : "정보 미등록"} />
-          <InfoItem label="휴대폰 번호" value={data.phone_number || "정보 미등록"} />
-          <InfoItem label="사무실 전화번호" value={data.office_phone_number || "정보 미등록"} />
+          <InfoItem label="휴대폰 번호" value={data.phone_number || "비공개"} />
+          <InfoItem label="사무실 전화번호" value={data.office_phone_number || "비공개"} />
         </div>
       </div>
     </div>
+  );
+}
+
+export default function PartnerDetailPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-slate-500">로딩 중...</div>}>
+      <PartnerDetailInner />
+    </Suspense>
   );
 }
 

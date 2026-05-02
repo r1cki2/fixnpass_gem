@@ -188,6 +188,20 @@ def _require_authenticated_user(authorization: Optional[str]) -> dict:
     return {"id": user.id, "email": (user.email or "").lower()}
 
 
+def _optional_authenticated_user(authorization: Optional[str]) -> Optional[dict]:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    try:
+        token = authorization.replace("Bearer ", "", 1).strip()
+        user_res = supabase.auth.get_user(token)
+        user = getattr(user_res, "user", None)
+        if not user or not user.id:
+            return None
+        return {"id": user.id, "email": (user.email or "").lower()}
+    except Exception:
+        return None
+
+
 class UpdateRequest(BaseModel):
     repair_request_id: int
     requester_id: str
@@ -486,45 +500,111 @@ def _load_guide_rows() -> list[dict]:
 
 
 def _match_guide_comment(item: str) -> dict:
+    """
+    CSV 여러 행이 동시에 매칭되면 코멘트가 서로 다를 때는 안내를 생략하고,
+    모두 동일하면 하나로만 반환한다.
+    """
     t = re.sub(r"\s+", "", (item or "").lower())
     if not t:
         return {"guide_comment": None, "matched_alias": None, "guide_comments": [], "matched_aliases": []}
-    # 괄호 안 부가 표기(예: 시운전) 제거한 키 — CSV 키워드가 짧은 경우 매칭 보강
     t_noparen = re.sub(r"\([^)]*\)", "", t)
-    matched_comments: list[str] = []
-    matched_aliases: list[str] = []
-    scored_candidates: list[tuple[float, str, str]] = []
+    matched_pairs: list[tuple[str, str]] = []
     for row in _load_guide_rows():
+        comment = (row.get("guide_comment") or "").strip()
+        if not comment:
+            continue
         for alias in row["aliases"]:
             a = re.sub(r"\s+", "", alias.lower())
             if not a:
                 continue
             if a in t or t in a or a in t_noparen or t_noparen in a:
-                matched_comments.append(row["guide_comment"])
-                matched_aliases.append(alias)
+                matched_pairs.append((comment, alias))
+    scored_candidates: list[tuple[float, str, str]] = []
+    for row in _load_guide_rows():
+        comment = (row.get("guide_comment") or "").strip()
+        if not comment:
+            continue
+        for alias in row["aliases"]:
+            a = re.sub(r"\s+", "", alias.lower())
+            if not a:
                 continue
-            # 완전 포함이 아니면 문자열 유사도 기반으로 완화 매칭
             score = difflib.SequenceMatcher(None, t, a).ratio()
             if score >= 0.62:
-                scored_candidates.append((score, row["guide_comment"], alias))
+                scored_candidates.append((score, comment, alias))
     if scored_candidates:
         scored_candidates.sort(key=lambda x: x[0], reverse=True)
-        top_n = scored_candidates[:3]
-        for _, comment, alias in top_n:
-            matched_comments.append(comment)
-            matched_aliases.append(alias)
-    uniq_comments = list(dict.fromkeys([c for c in matched_comments if c]))
-    uniq_aliases = list(dict.fromkeys([a for a in matched_aliases if a]))
-    return {
-        "guide_comment": " / ".join(uniq_comments) if uniq_comments else None,
-        "matched_alias": ", ".join(uniq_aliases) if uniq_aliases else None,
-        "guide_comments": uniq_comments,
-        "matched_aliases": uniq_aliases,
-    }
+        for _, comment, alias in scored_candidates[:3]:
+            matched_pairs.append((comment, alias))
+    uniq_comments = list(dict.fromkeys([c for c, _ in matched_pairs if c]))
+    uniq_aliases = list(dict.fromkeys([a for _, a in matched_pairs if a]))
+    if len(uniq_comments) > 1:
+        return {
+            "guide_comment": None,
+            "matched_alias": None,
+            "guide_comments": [],
+            "matched_aliases": uniq_aliases,
+        }
+    if len(uniq_comments) == 1:
+        c = uniq_comments[0]
+        return {
+            "guide_comment": c,
+            "matched_alias": ", ".join(uniq_aliases) if uniq_aliases else None,
+            "guide_comments": [c],
+            "matched_aliases": uniq_aliases,
+        }
+    return {"guide_comment": None, "matched_alias": None, "guide_comments": [], "matched_aliases": []}
 
 
 def _clean_text(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip()
+
+
+def _item_key_for_split(s: str) -> str:
+    return re.sub(r"\s+", "", (_clean_text(s) if s else "").lower())
+
+
+def _split_selected_items(parsed_data: Optional[dict], selected_items: Optional[list]) -> dict:
+    """parsed_data의 부적합/권고 목록과 비교해 선택 항목을 구분한다."""
+    sel = list(selected_items or [])
+    mkeys: set[str] = set()
+    okeys: set[str] = set()
+    if isinstance(parsed_data, dict):
+        for x in parsed_data.get("mandatory") or []:
+            if isinstance(x, str) and _clean_text(x):
+                mkeys.add(_item_key_for_split(x))
+        for x in parsed_data.get("optional") or []:
+            if isinstance(x, str) and _clean_text(x):
+                okeys.add(_item_key_for_split(x))
+        for x in parsed_data.get("mandatory_repairs") or []:
+            if isinstance(x, dict) and x.get("item"):
+                mkeys.add(_item_key_for_split(str(x.get("item"))))
+        for x in parsed_data.get("optional_repairs") or []:
+            if isinstance(x, dict) and x.get("item"):
+                okeys.add(_item_key_for_split(str(x.get("item"))))
+    sel_m: list[str] = []
+    sel_o: list[str] = []
+    sel_u: list[str] = []
+    for raw in sel:
+        if raw is None:
+            continue
+        rs = raw if isinstance(raw, str) else str(raw)
+        k = _item_key_for_split(rs)
+        if not k:
+            continue
+        if k in mkeys:
+            sel_m.append(rs)
+        elif k in okeys:
+            sel_o.append(rs)
+        else:
+            sel_u.append(rs)
+    return {"mandatory": sel_m, "optional": sel_o, "unspecified": sel_u}
+
+
+def _masked_partner_label(partner_id: str, request_id: int) -> str:
+    digest = hashlib.sha256(
+        f"{partner_id}:req:{request_id}:fixnpass_partner_mask".encode("utf-8")
+    ).hexdigest()
+    return f"업체-{digest[:4].upper()}{digest[4:8]}"
 
 
 def _pdf_pages_text(pdf_bytes: bytes) -> list[str]:
@@ -1337,7 +1417,11 @@ async def discard_pending_quote_draft(body: PendingDraftCleanupBody):
 
 
 @app.get("/api/partner/{partner_id}")
-async def get_partner_profile(partner_id: str):
+async def get_partner_profile(
+    partner_id: str,
+    request_id: Optional[int] = None,
+    authorization: Optional[str] = Header(default=None),
+):
     try:
         profile_res = (
             supabase.table("profiles")
@@ -1380,13 +1464,58 @@ async def get_partner_profile(partner_id: str):
         except Exception:
             pass
 
+        mask = False
+        if request_id is not None:
+            viewer = _optional_authenticated_user(authorization)
+            if not viewer:
+                raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+            rr = (
+                supabase.table("repair_requests")
+                .select("requester_id, status, selected_bid_ids")
+                .eq("repair_request_id", request_id)
+                .limit(1)
+                .execute()
+            )
+            if not rr.data or rr.data[0].get("requester_id") != viewer["id"]:
+                raise HTTPException(status_code=403, detail="권한이 없습니다.")
+            st = rr.data[0].get("status") or ""
+            selected_ids = rr.data[0].get("selected_bid_ids") or []
+            bid_row = (
+                supabase.table("bids")
+                .select("bid_id")
+                .eq("repair_request_id", request_id)
+                .eq("partner_id", partner_id)
+                .limit(1)
+                .execute()
+            )
+            my_bid_id = bid_row.data[0]["bid_id"] if bid_row.data else None
+            is_sel = my_bid_id is not None and my_bid_id in selected_ids
+            if st in ("requested", "bidding", "draft"):
+                mask = True
+            elif st in ("matched", "repairing", "completed"):
+                mask = not is_sel
+            else:
+                mask = True
+
+        base_company = profile.get("company_name") or profile.get("name") or "업체명 미확인"
+        if mask:
+            display_company = _masked_partner_label(partner_id, request_id or 0)
+            phone_disp = "비공개"
+            office_disp = "비공개"
+        else:
+            display_company = base_company
+            phone_disp = profile.get("phone_number") or "미등록"
+            office_disp = profile.get("office_phone_number") or "미등록"
+
         return {
             "status": "success",
             "data": {
                 "partner_id": partner_id,
                 "name": profile.get("name"),
-                "company_name": profile.get("company_name"),
-                "office_phone_number": profile.get("office_phone_number"),
+                "company_name": display_company,
+                "display_company_masked": mask,
+                "phone_number": phone_disp,
+                "office_phone_number": office_disp,
                 "avg_rating": float(rating.get("avg_rating", 0)),
                 "review_count": int(rating.get("review_count", 0)),
                 **extra,
@@ -1647,19 +1776,25 @@ async def get_request_detail(request_id: int, requester_id: str):
         )
         if not res.data:
             raise HTTPException(status_code=404, detail="Not found")
-        return {"status": "success", "data": res.data[0]}
+        row = res.data[0]
+        pd = row.get("parsed_data")
+        spl = _split_selected_items(pd if isinstance(pd, dict) else None, row.get("selected_items"))
+        row["selected_items_mandatory"] = spl["mandatory"]
+        row["selected_items_optional"] = spl["optional"]
+        row["selected_items_unspecified"] = spl["unspecified"]
+        return {"status": "success", "data": row}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/my-requests/{request_id}/bids")
 async def get_bids_for_request(request_id: int, requester_id: str):
-    """의뢰인용 견적 조회 (업체 선택 전 연락처 마스킹)."""
+    """의뢰인용 견적 조회 (매칭 전 업체 식별·연락처 마스킹)."""
     try:
         _require_active_role(requester_id, ["requester"], "requester")
         req_res = (
             supabase.table("repair_requests")
-            .select("selected_bid_ids, requester_id")
+            .select("selected_bid_ids, requester_id, status")
             .eq("repair_request_id", request_id)
             .execute()
         )
@@ -1668,13 +1803,14 @@ async def get_bids_for_request(request_id: int, requester_id: str):
 
         bids_res = (
             supabase.table("bids")
-            .select("*, profiles(name, phone_number)")
+            .select("*, profiles(name, phone_number, company_name)")
             .eq("repair_request_id", request_id)
             .execute()
         )
         ratings_res = supabase.table("partner_ratings").select("*").execute()
         ratings_dict = {r["partner_id"]: r for r in ratings_res.data}
         selected_ids = req_res.data[0].get("selected_bid_ids", []) or []
+        req_status = req_res.data[0].get("status") or ""
 
         processed_bids = []
         for b in bids_res.data:
@@ -1682,16 +1818,27 @@ async def get_bids_for_request(request_id: int, requester_id: str):
             profile = b.get("profiles") or {}
             rating_info = ratings_dict.get(p_id, {"avg_rating": 0, "review_count": 0})
             is_selected = b["bid_id"] in selected_ids
+            base_name = profile.get("company_name") or profile.get("name") or "업체명 미확인"
+            mask_partner = req_status in ("requested", "bidding", "draft") or (
+                req_status in ("matched", "repairing", "completed") and not is_selected
+            )
+            if mask_partner:
+                pub_name = _masked_partner_label(p_id, request_id)
+                pub_phone = "비공개"
+            else:
+                pub_name = base_name
+                pub_phone = profile.get("phone_number") or "미등록"
             processed_bids.append(
                 {
                     "bid_id": b["bid_id"],
                     "partner_id": p_id,
-                    "partner_name": profile.get("name", "업체명 미확인"),
-                    "partner_phone": profile.get("phone_number") if is_selected else "010-****-****",
+                    "partner_name": pub_name,
+                    "partner_phone": pub_phone,
                     "bid_amount": b["bid_amount"],
                     "avg_rating": float(rating_info["avg_rating"]),
                     "review_count": int(rating_info["review_count"]),
                     "is_selected": is_selected,
+                    "partner_masked": mask_partner,
                 }
             )
         return {"status": "success", "data": processed_bids}
@@ -1888,9 +2035,12 @@ async def get_market_detail(request_id: int, partner_id: str):
         if selected_ids and (not my_bid_id or my_bid_id not in selected_ids):
             data["my_bid_status"] = "타업체 선정됨"
         data["request_stage_kr"] = _request_stage_kr(data.get("status", ""))
+        pd = data.get("parsed_data")
+        spl = _split_selected_items(pd if isinstance(pd, dict) else None, data.get("selected_items"))
+        data["selected_items_mandatory"] = spl["mandatory"]
+        data["selected_items_optional"] = spl["optional"]
+        data["selected_items_unspecified"] = spl["unspecified"]
         return {"status": "success", "data": data}
-    except HTTPException as e:
-        raise e
     except HTTPException as e:
         raise e
     except Exception as e:

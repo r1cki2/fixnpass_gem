@@ -117,7 +117,8 @@ export default function ContractorBidPage() {
   if (!req) return <div className="min-h-screen bg-slate-50 flex items-center justify-center">로딩 중...</div>;
   const parkingInfo = req?.parsed_data?.site_info?.parking || {};
   const manufacturer = parkingInfo?.manufacturer || "-";
-  const elevatorCount = parkingInfo?.elevator_count || "-";
+  const elevatorRaw = parkingInfo?.elevator_count ?? "-";
+  const elevatorDisplay = formatElevatorDisplay(elevatorRaw);
 
   const deadlineLabel = req.quote_deadline_at
     ? new Date(req.quote_deadline_at).toLocaleDateString("ko-KR")
@@ -141,12 +142,17 @@ export default function ContractorBidPage() {
 
         <div className="bg-white border border-slate-200 rounded-[2.5rem] p-10 shadow-sm mb-8">
           <div className="flex justify-between items-start mb-10">
-            <div>
-              <h1 className="text-3xl font-black text-slate-900 mb-2">{req.site_alias || "비공개 현장"}</h1>
-              <p className="text-slate-500 font-medium">{req.region_summary} · {req.parking_type}</p>
-              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <DetailMetaChip label="제작사" value={manufacturer} />
-                <DetailMetaChip label="승강기 대수" value={elevatorCount} />
+            <div className="min-w-0 flex-1">
+              <h1 className="text-3xl font-black text-slate-900 mb-4">{req.site_alias || "비공개 현장"}</h1>
+              <div className="rounded-2xl border-2 border-blue-100 bg-gradient-to-br from-blue-50/90 to-slate-50 px-5 py-4 mb-6">
+                <p className="text-[11px] font-black text-blue-600 uppercase tracking-widest mb-1">지역 (시·군·구)</p>
+                <p className="text-xl font-black text-slate-900 leading-snug">{req.region_summary || "—"}</p>
+                <p className="text-[11px] font-black text-indigo-600 uppercase tracking-widest mt-4 mb-1">승강기 종류·방식</p>
+                <p className="text-lg font-bold text-indigo-950">{req.parking_type || "—"}</p>
+              </div>
+              <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <DetailMetaChip label="제작사" value={manufacturer} wide />
+                <DetailMetaChip label="승강기 대수·기" value={elevatorDisplay} wide />
                 <DetailMetaChip label="요청 상태" value={req.request_stage_kr || req.status} />
                 <DetailMetaChip label="견적 마감일" value={deadlineLabel} />
                 <DetailMetaChip label="내 견적 등록일" value={myBidAt} />
@@ -164,14 +170,52 @@ export default function ContractorBidPage() {
             )}
           </div>
 
-          <div className="space-y-4 mb-10">
+          <div className="space-y-6 mb-10">
             <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest">수리 요청 항목</h3>
-            {req.selected_items?.map((item: string, i: number) => (
-              <div key={i} className="flex items-start gap-4 bg-slate-50 p-5 rounded-2xl border border-slate-100">
-                <CheckCircle2 className="w-6 h-6 text-blue-600 shrink-0" />
-                <span className="text-slate-700 font-bold">{item}</span>
-              </div>
-            ))}
+            {(req.selected_items_mandatory?.length > 0 || req.selected_items_optional?.length > 0) ? (
+              <>
+                {req.selected_items_mandatory?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-black text-rose-600 uppercase tracking-wider">부적합 항목</p>
+                    {req.selected_items_mandatory.map((item: string, i: number) => (
+                      <div key={`m-${i}`} className="flex items-start gap-4 bg-rose-50/80 p-5 rounded-2xl border border-rose-100">
+                        <CheckCircle2 className="w-6 h-6 text-rose-600 shrink-0" />
+                        <span className="text-slate-800 font-bold">{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {req.selected_items_optional?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-black text-blue-600 uppercase tracking-wider">권고 항목</p>
+                    {req.selected_items_optional.map((item: string, i: number) => (
+                      <div key={`o-${i}`} className="flex items-start gap-4 bg-blue-50/80 p-5 rounded-2xl border border-blue-100">
+                        <CheckCircle2 className="w-6 h-6 text-blue-600 shrink-0" />
+                        <span className="text-slate-800 font-bold">{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {(req.selected_items_unspecified?.length > 0) && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-black text-slate-500 uppercase tracking-wider">선택 항목</p>
+                    {req.selected_items_unspecified.map((item: string, i: number) => (
+                      <div key={`u-${i}`} className="flex items-start gap-4 bg-slate-50 p-5 rounded-2xl border border-slate-100">
+                        <CheckCircle2 className="w-6 h-6 text-slate-600 shrink-0" />
+                        <span className="text-slate-700 font-bold">{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              (req.selected_items || []).map((item: string, i: number) => (
+                <div key={i} className="flex items-start gap-4 bg-slate-50 p-5 rounded-2xl border border-slate-100">
+                  <CheckCircle2 className="w-6 h-6 text-blue-600 shrink-0" />
+                  <span className="text-slate-700 font-bold">{item}</span>
+                </div>
+              ))
+            )}
           </div>
 
           <button
@@ -225,11 +269,28 @@ export default function ContractorBidPage() {
   );
 }
 
-function DetailMetaChip({ label, value }: { label: string; value: string }) {
+function formatElevatorDisplay(raw: unknown): string {
+  if (raw === null || raw === undefined) return "-";
+  const s = String(raw).trim();
+  if (!s || s === "-") return "-";
+  const da = s.match(/(\d+)\s*대/);
+  const gi = s.match(/(\d+)\s*기/);
+  if (da && gi) {
+    const parts = s.includes(",") ? s : `${da[1]}대, ${gi[1]}기`;
+    return parts;
+  }
+  return s;
+}
+
+function DetailMetaChip({ label, value, wide }: { label: string; value: string; wide?: boolean }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-      <p className="text-[11px] text-slate-500 mb-1">{label}</p>
-      <p className="text-sm font-semibold text-slate-700">{value || "-"}</p>
+    <div
+      className={`rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 ${
+        wide ? "sm:min-h-[5.5rem]" : ""
+      }`}
+    >
+      <p className="text-[11px] text-slate-500 mb-1 font-semibold">{label}</p>
+      <p className={`font-semibold text-slate-800 leading-snug ${wide ? "text-base" : "text-sm"}`}>{value || "-"}</p>
     </div>
   );
 }

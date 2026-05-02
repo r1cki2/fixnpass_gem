@@ -116,13 +116,48 @@ export default function RequestDetailPage() {
             </div>
           </div>
 
-          <div className="grid gap-4">
-             <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">내가 선택한 수리 항목</h3>
-             {reqData.selected_items?.map((item: string, i: number) => (
+          <div className="grid gap-5">
+            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">내가 선택한 수리 항목</h3>
+            {(reqData.selected_items_mandatory?.length > 0 || reqData.selected_items_optional?.length > 0) ? (
+              <>
+                {reqData.selected_items_mandatory?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-black text-rose-600 uppercase tracking-wider">부적합 항목</p>
+                    {reqData.selected_items_mandatory.map((item: string, i: number) => (
+                      <div key={`m-${i}`} className="flex items-center gap-3 bg-rose-50 p-4 rounded-2xl border border-rose-100 font-bold text-slate-800">
+                        <CheckSquare className="w-5 h-5 text-rose-600 shrink-0" /> {item}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {reqData.selected_items_optional?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-black text-blue-600 uppercase tracking-wider">권고 항목</p>
+                    {reqData.selected_items_optional.map((item: string, i: number) => (
+                      <div key={`o-${i}`} className="flex items-center gap-3 bg-blue-50 p-4 rounded-2xl border border-blue-100 font-bold text-slate-800">
+                        <CheckSquare className="w-5 h-5 text-blue-600 shrink-0" /> {item}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {(reqData.selected_items_unspecified?.length ?? 0) > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-black text-slate-500 uppercase tracking-wider">기타 선택 항목</p>
+                    {reqData.selected_items_unspecified.map((item: string, i: number) => (
+                      <div key={`u-${i}`} className="flex items-center gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-100 font-bold text-slate-700">
+                        <CheckSquare className="w-5 h-5 text-slate-600 shrink-0" /> {item}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              reqData.selected_items?.map((item: string, i: number) => (
                 <div key={i} className="flex items-center gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-100 font-bold text-slate-700">
                   <CheckSquare className="w-5 h-5 text-blue-600" /> {item}
                 </div>
-             ))}
+              ))
+            )}
           </div>
           {(reqData.status === "requested" || reqData.status === "bidding" || reqData.status === "draft") && (
             <div className="mt-6">
@@ -164,13 +199,20 @@ export default function RequestDetailPage() {
               <div key={bid.bid_id} className={`bg-white border-2 p-8 rounded-[2.5rem] transition-all relative ${selectedIds.includes(bid.bid_id) ? 'border-blue-600 shadow-blue-50' : 'border-white shadow-sm'}`}>
                 <div className="flex justify-between items-start mb-6">
                   <div>
-                    <div className="flex items-center gap-3 mb-2">
+                    <div className="flex items-center gap-3 mb-2 flex-wrap">
                       <h4 className="text-xl font-black text-slate-900">{bid.partner_name}</h4>
-                      <Link href={`/partner/${bid.partner_id}`} className="text-xs font-bold text-blue-600 hover:underline">업체 정보 보기 &gt;</Link>
+                      <Link
+                        href={`/partner/${bid.partner_id}?request_id=${encodeURIComponent(String(requestId))}`}
+                        className="text-xs font-bold text-blue-600 hover:underline"
+                      >
+                        업체 정보 보기 &gt;
+                      </Link>
                     </div>
-                    <div className="flex items-center gap-4 text-sm font-bold text-slate-500">
+                    <div className="flex items-center gap-4 text-sm font-bold text-slate-500 flex-wrap">
                       <span className="flex items-center gap-1 text-amber-500"><Star className="w-4 h-4 fill-current" /> {bid.avg_rating} ({bid.review_count})</span>
-                      {bid.is_selected && <span className="flex items-center gap-1 text-green-600"><Phone className="w-4 h-4" /> {bid.partner_phone}</span>}
+                      <span className="flex items-center gap-1 text-slate-600">
+                        <Phone className="w-4 h-4" /> {bid.partner_phone}
+                      </span>
                     </div>
                   </div>
                   <div className="text-right">
