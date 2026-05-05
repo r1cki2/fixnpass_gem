@@ -14,6 +14,46 @@ type Trends = {
   weekly: { label: string; total: number; matched: number; completed: number }[];
   monthly: { label: string; total: number; matched: number; completed: number }[];
 };
+type MailCatalogItem = {
+  event_type: string;
+  label: string;
+  trigger: string;
+  recipient: string;
+  queue_tracked: boolean;
+};
+type MailingRow = {
+  notification_id: number;
+  event_type: string;
+  event_label: string;
+  event_trigger: string;
+  recipient_type: string;
+  recipient_name: string;
+  user_id: string;
+  status: string;
+  created_at: string;
+  mail_meta: {
+    channel?: string;
+    immediate_attempted?: boolean;
+    immediate_attempted_at?: string;
+    immediate_sent?: boolean;
+    immediate_sent_at?: string;
+    immediate_error?: string;
+    cron_attempted_at?: string;
+    cron_sent?: boolean;
+    cron_sent_at?: string;
+    cron_error?: string;
+    cron_attempt_count?: number;
+    last_attempt_type?: string;
+    last_attempt_at?: string;
+    last_attempt_success?: boolean;
+  };
+};
+type AdminMailRecipient = {
+  user_id: string;
+  email: string;
+  is_master: boolean;
+  mail_enabled: boolean;
+};
 
 const REQUEST_STATUSES = ["draft", "requested", "bidding", "matched", "repairing", "completed", "cancelled"];
 
@@ -36,13 +76,21 @@ export default function AdminPage() {
   const [approvalFilter, setApprovalFilter] = useState<"all" | "pending" | "active">("all");
   const [userSearch, setUserSearch] = useState("");
   const [actionLogs, setActionLogs] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<"requests" | "inquiries" | "ops" | "stats">("requests");
+  const [activeTab, setActiveTab] = useState<"requests" | "inquiries" | "mail" | "ops" | "stats">("requests");
   const [adminRequests, setAdminRequests] = useState<any[]>([]);
   const [reqStatusFilter, setReqStatusFilter] = useState("ALL");
   const [reqSearch, setReqSearch] = useState("");
   const [grantUserId, setGrantUserId] = useState("");
   const [isMasterAdmin, setIsMasterAdmin] = useState(false);
-  const [allowedTabs, setAllowedTabs] = useState<Array<"requests" | "inquiries" | "ops" | "stats">>(["requests", "inquiries"]);
+  const [allowedTabs, setAllowedTabs] = useState<Array<"requests" | "inquiries" | "mail" | "ops" | "stats">>([
+    "requests",
+    "inquiries",
+  ]);
+  const [mailings, setMailings] = useState<MailingRow[]>([]);
+  const [mailCatalog, setMailCatalog] = useState<MailCatalogItem[]>([]);
+  const [mailRecipients, setMailRecipients] = useState<AdminMailRecipient[]>([]);
+  const [mailStatusFilter, setMailStatusFilter] = useState("ALL");
+  const [mailEventFilter, setMailEventFilter] = useState("ALL");
   const [actionMessage, setActionMessage] = useState("");
 
   const baseUrl = useMemo(() => process.env.NEXT_PUBLIC_API_BASE_URL, []);
@@ -57,7 +105,7 @@ export default function AdminPage() {
   };
 
   const fetchAll = async (t: string) => {
-    const [oRes, aRes, sRes, tRes, pRes, iRes, lRes, rRes] = await Promise.all([
+    const [oRes, aRes, sRes, tRes, pRes, iRes, lRes, rRes, mRes, mrRes] = await Promise.all([
       fetch(`${baseUrl}/api/admin/overview`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/auth-users`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/settings/contractor-approval`, { headers: authHeader(t) }),
@@ -66,6 +114,11 @@ export default function AdminPage() {
       fetch(`${baseUrl}/api/admin/inquiries`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/action-logs`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/requests?status=${encodeURIComponent(reqStatusFilter)}`, { headers: authHeader(t) }),
+      fetch(
+        `${baseUrl}/api/admin/mailings?status=${encodeURIComponent(mailStatusFilter)}&event_type=${encodeURIComponent(mailEventFilter)}`,
+        { headers: authHeader(t) },
+      ),
+      fetch(`${baseUrl}/api/admin/mail-recipients`, { headers: authHeader(t) }),
     ]);
     if ([oRes, aRes].some((r) => r.status === 401 || r.status === 403)) {
       alert("관리자 권한이 없습니다.");
@@ -83,6 +136,12 @@ export default function AdminPage() {
     if (iRes.ok) setAdminInquiries((await iRes.json()).data || []);
     if (lRes.ok) setActionLogs((await lRes.json()).data || []);
     if (rRes.ok) setAdminRequests((await rRes.json()).data || []);
+    if (mRes.ok) {
+      const mJson = await mRes.json();
+      setMailings(mJson?.data?.rows || []);
+      setMailCatalog(mJson?.data?.catalog || []);
+    }
+    if (mrRes.ok) setMailRecipients((await mrRes.json()).data || []);
     setOverview(oJson.data);
     setAuthUsers(aJson.data || []);
     setTrends(tJson.data || { daily: [], weekly: [], monthly: [] });
@@ -97,14 +156,16 @@ export default function AdminPage() {
       const sRes = await fetch(`${baseUrl}/api/admin/session`, { headers: { Authorization: `Bearer ${accessToken}` } });
       if (!sRes.ok) return router.replace("/");
       const sJson = await sRes.json();
-      const tabs = (sJson?.data?.allowed_tabs || ["requests", "inquiries"]) as Array<"requests" | "inquiries" | "ops" | "stats">;
+      const tabs = (sJson?.data?.allowed_tabs || ["requests", "inquiries"]) as Array<
+        "requests" | "inquiries" | "mail" | "ops" | "stats"
+      >;
       setAllowedTabs(tabs);
       setIsMasterAdmin(Boolean(sJson?.data?.is_master));
       if (!tabs.includes(activeTab)) setActiveTab(tabs[0] || "requests");
       await fetchAll(accessToken);
       setLoading(false);
     })();
-  }, [router, baseUrl, reqStatusFilter]);
+  }, [router, baseUrl, reqStatusFilter, mailStatusFilter, mailEventFilter]);
 
   const updateContractorApprovalSetting = async (next: boolean) => {
     await runAction("설정을 저장하는 중...", async () => {
@@ -275,9 +336,113 @@ export default function AdminPage() {
       <div className="flex gap-2">
         {allowedTabs.includes("requests") && <button onClick={() => setActiveTab("requests")} className={`px-3 py-1 rounded ${activeTab === "requests" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>회원 및 견적 관리</button>}
         {allowedTabs.includes("inquiries") && <button onClick={() => setActiveTab("inquiries")} className={`px-3 py-1 rounded ${activeTab === "inquiries" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>고객 문의 관리</button>}
+        {allowedTabs.includes("mail") && <button onClick={() => setActiveTab("mail")} className={`px-3 py-1 rounded ${activeTab === "mail" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>메일링 관리</button>}
         {allowedTabs.includes("ops") && <button onClick={() => setActiveTab("ops")} className={`px-3 py-1 rounded ${activeTab === "ops" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>승인/팝업/운영</button>}
         {allowedTabs.includes("stats") && <button onClick={() => setActiveTab("stats")} className={`px-3 py-1 rounded ${activeTab === "stats" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>서비스 사용 현황</button>}
       </div>
+
+      {activeTab === "mail" && <section className="bg-white border rounded-2xl p-5 space-y-4">
+        <h2 className="text-xl font-bold">메일링 관리</h2>
+        <div className="grid md:grid-cols-3 gap-2">
+          <select value={mailStatusFilter} onChange={(e) => setMailStatusFilter(e.target.value)} className="border rounded px-2 py-1 text-sm">
+            <option value="ALL">전체 상태</option>
+            <option value="pending">pending</option>
+            <option value="failed">failed</option>
+            <option value="sent">sent</option>
+          </select>
+          <select value={mailEventFilter} onChange={(e) => setMailEventFilter(e.target.value)} className="border rounded px-2 py-1 text-sm">
+            <option value="ALL">전체 이벤트</option>
+            {mailCatalog.map((c) => <option key={c.event_type} value={c.event_type}>{c.label}</option>)}
+          </select>
+          <button onClick={() => fetchAll(token)} className="px-3 py-1 rounded bg-slate-900 text-white text-sm">새로고침</button>
+        </div>
+
+        <div className="border rounded-xl p-3">
+          <p className="font-semibold mb-2">메일 이벤트 카탈로그</p>
+          <div className="max-h-[220px] overflow-y-auto space-y-2 text-sm">
+            {mailCatalog.map((c) => (
+              <div key={c.event_type} className="border rounded p-2">
+                <div className="font-semibold">{c.label} <span className="text-xs text-slate-500">({c.event_type})</span></div>
+                <div className="text-xs text-slate-600">수신자: {c.recipient} / 추적: {c.queue_tracked ? "queue 기반" : "즉시발송 전용"}</div>
+                <div className="text-xs text-slate-600">{c.trigger}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {isMasterAdmin && <div className="border rounded-xl p-3">
+          <p className="font-semibold mb-2">관리자 수신인 설정 (마스터 전용)</p>
+          <div className="space-y-2 text-sm">
+            {mailRecipients.map((r) => (
+              <div key={r.user_id} className="flex items-center justify-between border rounded p-2">
+                <div>
+                  <div className="font-semibold">{r.email}</div>
+                  <div className="text-xs text-slate-500">{r.is_master ? "Master Admin (항상 수신)" : `user_id: ${r.user_id}`}</div>
+                </div>
+                <button
+                  disabled={r.is_master}
+                  onClick={async () => {
+                    await runAction("관리자 수신인 설정을 변경하는 중...", async () => {
+                      const res = await fetch(`${baseUrl}/api/admin/master/mail-recipients`, {
+                        method: "POST",
+                        headers: authHeader(token),
+                        body: JSON.stringify({ user_id: r.user_id, enabled: !r.mail_enabled }),
+                      });
+                      const json = await res.json();
+                      if (!res.ok) return alert(json.detail || "설정 변경 실패");
+                      await fetchAll(token);
+                    });
+                  }}
+                  className={`px-3 py-1 rounded text-xs font-semibold ${r.mail_enabled ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-700"} ${r.is_master ? "opacity-50 cursor-not-allowed" : ""}`}
+                >
+                  {r.mail_enabled ? "수신중 (클릭 시 제외)" : "제외됨 (클릭 시 수신)"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>}
+
+        <div className="overflow-x-auto max-h-[560px] overflow-y-auto">
+          <table className="w-full text-xs min-w-[1450px]">
+            <thead><tr className="border-b bg-slate-50">
+              <th className="py-2 px-2">ID</th><th className="py-2 px-2">이벤트</th><th className="py-2 px-2">발생일시</th><th className="py-2 px-2">즉시발송</th>
+              <th className="py-2 px-2">즉시결과/오류</th><th className="py-2 px-2">크론시도</th><th className="py-2 px-2">크론성공여부</th>
+              <th className="py-2 px-2">최종상태</th><th className="py-2 px-2">수신자</th><th className="py-2 px-2">채널</th>
+            </tr></thead>
+            <tbody>
+              {mailings.map((m) => (
+                <tr key={m.notification_id} className="border-b align-top">
+                  <td className="py-2 px-2 font-mono">{m.notification_id}</td>
+                  <td className="py-2 px-2">
+                    <div className="font-semibold">{m.event_label}</div>
+                    <div className="text-slate-500">{m.event_type}</div>
+                  </td>
+                  <td className="py-2 px-2">{m.created_at ? new Date(m.created_at).toLocaleString("ko-KR") : "-"}</td>
+                  <td className="py-2 px-2">{m.mail_meta?.immediate_attempted ? "Y" : "N"}{m.mail_meta?.immediate_attempted_at ? ` (${new Date(m.mail_meta.immediate_attempted_at).toLocaleString("ko-KR")})` : ""}</td>
+                  <td className="py-2 px-2">
+                    {m.mail_meta?.immediate_sent ? "성공" : "실패/대기"}
+                    {m.mail_meta?.immediate_error && <div className="text-rose-600 break-all">{m.mail_meta.immediate_error}</div>}
+                  </td>
+                  <td className="py-2 px-2">
+                    {m.mail_meta?.cron_attempt_count || 0}회
+                    {m.mail_meta?.cron_attempted_at && <div>{new Date(m.mail_meta.cron_attempted_at).toLocaleString("ko-KR")}</div>}
+                  </td>
+                  <td className="py-2 px-2">
+                    {m.mail_meta?.cron_sent ? "성공" : (m.mail_meta?.cron_attempt_count ? "실패" : "-")}
+                    {m.mail_meta?.cron_error && <div className="text-rose-600 break-all">{m.mail_meta.cron_error}</div>}
+                  </td>
+                  <td className="py-2 px-2 font-semibold">{m.status}</td>
+                  <td className="py-2 px-2">
+                    {m.recipient_name || "-"}
+                    <div className="text-slate-500">{m.user_id}</div>
+                  </td>
+                  <td className="py-2 px-2">{m.mail_meta?.channel || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>}
 
       {activeTab === "ops" && isMasterAdmin && <section className="bg-white border rounded-2xl p-5 space-y-3">
         <h2 className="text-xl font-bold">회원가입 승인 설정</h2>

@@ -61,6 +61,208 @@ MAIL_FROM = os.environ.get("MAIL_FROM", MAIL_SMTP_USER or "no-reply@fixnpass.loc
 MAIL_CRON_SECRET = (
     os.environ.get("MAIL_CRON_SECRET") or os.environ.get("NOTIFICATION_CRON_SECRET") or ""
 ).strip()
+# Render 무료 등 SMTP(587) 차단 시: HTTPS 트랜잭션 메일
+# - BREVO_API_KEY: 권장(도메인 없어도 single sender로 시작 가능)
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "").strip()
+
+
+def _mail_delivery_configured() -> bool:
+    """SMTP 또는 HTTPS 메일 API(Brevo) 중 하나라도 설정되면 발송 가능."""
+    if BREVO_API_KEY:
+        return True
+    return bool(MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS)
+
+
+MAIL_EVENT_CATALOG = {
+    "new_request_in_interest_region": {
+        "label": "관심지역 신규 요청 알림",
+        "trigger": "요청이 requested 상태가 되면 관심지역 일치 업체에게 발송",
+        "recipient": "수리업체",
+        "queue_tracked": True,
+    },
+    "request_submitted_notice": {
+        "label": "견적요청 접수 안내",
+        "trigger": "의뢰인이 견적요청을 제출(requested)하면 본인에게 발송",
+        "recipient": "수리요청인",
+        "queue_tracked": True,
+    },
+    "first_bid_submitted": {
+        "label": "최초 견적 제출 접수",
+        "trigger": "수리업체가 해당 요청에 첫 견적을 제출하면 업체 본인에게 발송",
+        "recipient": "수리업체",
+        "queue_tracked": True,
+    },
+    "new_bid_for_requester": {
+        "label": "견적 등록/수정 안내",
+        "trigger": "수리업체 견적 등록/수정 시 요청 소유자에게 발송",
+        "recipient": "수리요청인",
+        "queue_tracked": True,
+    },
+    "requester_selected_partner": {
+        "label": "업체 선정 안내",
+        "trigger": "요청자가 업체를 선택하면 선택된 업체에게 발송",
+        "recipient": "수리업체",
+        "queue_tracked": True,
+    },
+    "contractor_signup_notify_admin": {
+        "label": "수리업체 가입신청 관리자 알림",
+        "trigger": "수리업체 가입신청 시 관리자에게 즉시 발송",
+        "recipient": "관리자",
+        "queue_tracked": False,
+    },
+    "inquiry_created_notify_admin": {
+        "label": "신규 고객문의 관리자 알림",
+        "trigger": "고객 문의 생성 시 관리자에게 즉시 발송",
+        "recipient": "관리자",
+        "queue_tracked": False,
+    },
+}
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _mail_channel_name() -> str:
+    return "brevo" if BREVO_API_KEY else "smtp"
+
+
+def _merge_mail_meta(payload: Optional[dict], **fields) -> dict:
+    base = payload if isinstance(payload, dict) else {}
+    existing = base.get("_mail")
+    meta = dict(existing) if isinstance(existing, dict) else {}
+    meta.update(fields)
+    return {**base, "_mail": meta}
+
+
+def _build_notification_mail(event_type: str, payload: dict) -> tuple[str, str]:
+    if event_type == "new_request_in_interest_region":
+        return (
+            "[Fix&Pass] 신규 견적 요청이 등록되었습니다",
+            (
+                "안녕하세요. Fix&Pass 알림입니다.\n\n"
+                "관심 지역에 새로운 견적 요청이 등록되었습니다.\n"
+                f"- 현장 별칭: {payload.get('site_alias')}\n"
+                f"- 요청 ID: {payload.get('repair_request_id')}\n"
+                f"- 지역: {payload.get('region_summary')}\n"
+                f"- 요청 시각: {payload.get('created_at') or '-'}\n\n"
+                "수리 마켓에서 상세 내용을 확인해 주세요."
+            ),
+        )
+    if event_type == "first_bid_submitted":
+        return (
+            "[Fix&Pass] 최초 견적 제출이 접수되었습니다",
+            (
+                "최초 견적 제출이 정상 접수되었습니다.\n\n"
+                f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
+                "의뢰인이 업체를 선택하면 추가 안내 메일이 발송됩니다."
+            ),
+        )
+    if event_type == "requester_selected_partner":
+        return (
+            "[Fix&Pass] 의뢰인이 업체를 선택했습니다",
+            (
+                "축하합니다. 제출하신 견적이 의뢰인에게 선택되었습니다.\n\n"
+                f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
+                f"- 선택된 견적 ID: {payload.get('selected_bid_id')}\n"
+                "서비스에서 상세 진행 상태를 확인해주세요."
+            ),
+        )
+    if event_type == "new_bid_for_requester":
+        action = payload.get("action") or "created"
+        action_kr = "신규 등록" if action == "created" else "수정"
+        return (
+            f"[Fix&Pass] 요청하신 건에 견적이 {action_kr}되었습니다",
+            (
+                "안녕하세요. Fix&Pass 알림입니다.\n\n"
+                f"요청하신 수리 건에 견적이 {action_kr}되었습니다.\n"
+                f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
+                f"- 견적 ID: {payload.get('bid_id')}\n"
+                f"- 견적 금액: {payload.get('bid_amount')}\n\n"
+                "견적 제출 업체들은 보수업을 정식으로 등록하고 법정 보수원 교육을 이수한 업체입니다.\n\n"
+                "내 요청 내역에서 상세 견적을 확인해 주세요."
+            ),
+        )
+    if event_type == "request_submitted_notice":
+        return (
+            "[Fix&Pass] 견적 요청이 접수되었습니다",
+            (
+                "요청하신 견적이 정상 접수되었습니다.\n\n"
+                f"- 수리요청 ID: {payload.get('repair_request_id')}\n\n"
+                "견적 제출 업체들은 보수업을 정식으로 등록하고 법정 보수원 교육을 이수한 업체입니다.\n"
+                "내 요청 내역에서 접수 상태를 확인해 주세요."
+            ),
+        )
+    if event_type == "contractor_signup_notify_admin":
+        return (
+            "[Fix&Pass] 신규 수리업체 가입 신청",
+            (
+                "새로운 수리업체 가입 신청이 접수되었습니다.\n\n"
+                f"- 사용자 ID: {payload.get('user_id')}\n"
+                f"- 이름: {payload.get('name')}\n"
+                f"- 회사명: {payload.get('company_name')}\n"
+                f"- 연락처: {payload.get('phone_number')}\n"
+                f"- 사업장: {payload.get('business_location')}\n\n"
+                "관리자 페이지에서 승인 여부를 확인해 주세요."
+            ),
+        )
+    if event_type == "inquiry_created_notify_admin":
+        return (
+            "[Fix&Pass] 신규 고객 문의가 등록되었습니다",
+            (
+                "고객 문의가 접수되었습니다.\n\n"
+                f"- 문의 ID: {payload.get('inquiry_id')}\n"
+                f"- 유형: {payload.get('category')}\n"
+                f"- 제목: {payload.get('title')}\n"
+                f"- 작성자: {payload.get('name')}\n"
+                f"- 이메일: {payload.get('email')}\n\n"
+                "관리자 페이지 > 고객 문의에서 확인해주세요."
+            ),
+        )
+    return "[Fix&Pass] 알림", f"새 알림이 도착했습니다. event_type={event_type}"
+
+
+def _resolve_user_id_by_email(email: str) -> Optional[str]:
+    em = (email or "").strip().lower()
+    if not em:
+        return None
+    try:
+        users = supabase.auth.admin.list_users(page=1, per_page=1000)
+        entries = users if isinstance(users, list) else _unwrap_auth_user_list(users)
+        for u in entries:
+            ud = u if isinstance(u, dict) else (u.model_dump() if hasattr(u, "model_dump") else {})
+            if str((ud.get("email") or "")).lower() == em:
+                uid = ud.get("id")
+                return str(uid) if uid else None
+    except Exception:
+        return None
+    return None
+
+
+def _load_admin_mail_recipient_ids() -> set[str]:
+    ids: set[str] = set()
+    master_id = _resolve_user_id_by_email(MASTER_ADMIN_EMAIL)
+    if master_id:
+        ids.add(master_id)
+    try:
+        rows = supabase.table("admin_roles").select("user_id, receives_all_event_mails").execute().data or []
+        for r in rows:
+            uid = str(r.get("user_id") or "").strip()
+            if not uid:
+                continue
+            enabled = r.get("receives_all_event_mails")
+            if enabled is None or bool(enabled):
+                ids.add(uid)
+    except Exception:
+        try:
+            rows = supabase.table("admin_roles").select("user_id").execute().data or []
+            for r in rows:
+                uid = str(r.get("user_id") or "").strip()
+                if uid:
+                    ids.add(uid)
+        except Exception:
+            pass
+    return ids
 
 ORIGINAL_BUCKET = "inspection-original"
 MASKED_BUCKET = "inspection-masked"
@@ -272,6 +474,11 @@ class AdminBulkRequestStatusUpdate(BaseModel):
 
 class AdminGrantRoleBody(BaseModel):
     user_id: str
+
+
+class AdminMailRecipientUpdate(BaseModel):
+    user_id: str
+    enabled: bool
 
 
 class AdminBulkRequestAction(BaseModel):
@@ -675,9 +882,42 @@ def _has_open_duplicate_fingerprint(fingerprint: str) -> bool:
     return False
 
 
+def _send_mail_brevo(to_email: str, subject: str, body: str) -> None:
+    """Brevo REST API (443 HTTPS)."""
+    from_addr = (MAIL_FROM or "").strip()
+    if not from_addr or "@" not in from_addr:
+        raise RuntimeError("MAIL_FROM must be a valid email (or name <email>) when using BREVO_API_KEY")
+    # Brevo는 sender 객체를 요구한다. "Name <email>" 또는 "email" 모두 허용.
+    sender_name = "Fix&Pass"
+    sender_email = from_addr
+    if "<" in from_addr and ">" in from_addr:
+        sender_name = from_addr.split("<", 1)[0].strip().strip('"') or sender_name
+        sender_email = from_addr.split("<", 1)[1].split(">", 1)[0].strip()
+    resp = httpx.post(
+        "https://api.brevo.com/v3/smtp/email",
+        headers={
+            "api-key": BREVO_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        json={
+            "sender": {"name": sender_name, "email": sender_email},
+            "to": [{"email": to_email}],
+            "subject": subject,
+            "textContent": body,
+        },
+        timeout=30.0,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Brevo API HTTP {resp.status_code}: {resp.text}")
+
+
 def _send_mail(to_email: str, subject: str, body: str):
+    if BREVO_API_KEY:
+        _send_mail_brevo(to_email, subject, body)
+        return
     if not (MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS):
-        raise RuntimeError("SMTP env is not configured")
+        raise RuntimeError("SMTP env is not configured (set BREVO_API_KEY for HTTPS mail)")
     msg = MIMEText(body, _charset="utf-8")
     msg["Subject"] = subject
     msg["From"] = MAIL_FROM
@@ -702,98 +942,93 @@ def _normalize_region_summary(address_text: str) -> str:
 
 
 def _try_immediate_notification_mail(event_type: str, user_id: str, payload: dict, n_id: Optional[int]):
-    """큐 insert 이후 백그라운드에서 SMTP 시도(요청 응답 지연 방지)."""
-    if not (MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS):
+    """큐 insert 이후 백그라운드에서 메일 시도(요청 응답 지연 방지)."""
+    if not _mail_delivery_configured():
         return
+    attempted_at = _utc_now_iso()
     try:
         auth_user = supabase.auth.admin.get_user_by_id(user_id)
         email = getattr(getattr(auth_user, "user", None), "email", None)
         if not email:
             return
-        if event_type == "new_request_in_interest_region":
-            subject = "[Fix&Pass] 신규 견적 요청이 등록되었습니다"
-            body = (
-                "안녕하세요. Fix&Pass 알림입니다.\n\n"
-                "관심 지역에 새로운 견적 요청이 등록되었습니다.\n"
-                f"- 현장 별칭: {payload.get('site_alias')}\n"
-                f"- 요청 ID: {payload.get('repair_request_id')}\n"
-                f"- 지역: {payload.get('region_summary')}\n"
-                f"- 요청 시각: {payload.get('created_at') or '-'}\n\n"
-                "수리 마켓에서 상세 내용을 확인해 주세요."
-            )
-        elif event_type == "first_bid_submitted":
-            subject = "[Fix&Pass] 최초 견적 제출이 접수되었습니다"
-            body = (
-                "최초 견적 제출이 정상 접수되었습니다.\n\n"
-                f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
-                "의뢰인이 업체를 선택하면 추가 안내 메일이 발송됩니다."
-            )
-        elif event_type == "requester_selected_partner":
-            subject = "[Fix&Pass] 의뢰인이 업체를 선택했습니다"
-            body = (
-                "축하합니다. 제출하신 견적이 의뢰인에게 선택되었습니다.\n\n"
-                f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
-                f"- 선택된 견적 ID: {payload.get('selected_bid_id')}\n"
-                "서비스에서 상세 진행 상태를 확인해주세요."
-            )
-        elif event_type == "new_bid_for_requester":
-            action = payload.get("action") or "created"
-            action_kr = "신규 등록" if action == "created" else "수정"
-            subject = f"[Fix&Pass] 요청하신 건에 견적이 {action_kr}되었습니다"
-            body = (
-                "안녕하세요. Fix&Pass 알림입니다.\n\n"
-                f"요청하신 수리 건에 견적이 {action_kr}되었습니다.\n"
-                f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
-                f"- 견적 ID: {payload.get('bid_id')}\n"
-                f"- 견적 금액: {payload.get('bid_amount')}\n\n"
-                "견적 제출 업체들은 보수업을 정식으로 등록하고 법정 보수원 교육을 이수한 업체입니다.\n\n"
-                "내 요청 내역에서 상세 견적을 확인해 주세요."
-            )
-        elif event_type == "request_submitted_notice":
-            subject = "[Fix&Pass] 견적 요청이 접수되었습니다"
-            body = (
-                "요청하신 견적이 정상 접수되었습니다.\n\n"
-                f"- 수리요청 ID: {payload.get('repair_request_id')}\n\n"
-                "견적 제출 업체들은 보수업을 정식으로 등록하고 법정 보수원 교육을 이수한 업체입니다.\n"
-                "내 요청 내역에서 접수 상태를 확인해 주세요."
-            )
-        else:
-            subject = "[Fix&Pass] 알림"
-            body = f"새 알림이 도착했습니다. event_type={event_type}"
+        subject, body = _build_notification_mail(event_type, payload or {})
         _send_mail(email, subject, body)
         if n_id is not None:
-            supabase.table("notification_queue").update({"status": "sent"}).eq("notification_id", n_id).execute()
+            done_at = _utc_now_iso()
+            sent_payload = _merge_mail_meta(
+                payload,
+                immediate_attempted=True,
+                immediate_attempted_at=attempted_at,
+                immediate_sent=True,
+                immediate_sent_at=done_at,
+                immediate_error=None,
+                last_attempt_type="immediate",
+                last_attempt_at=done_at,
+                last_attempt_success=True,
+                channel=_mail_channel_name(),
+            )
+            supabase.table("notification_queue").update({"status": "sent", "payload": sent_payload}).eq(
+                "notification_id", n_id
+            ).execute()
     except Exception as e:
         logging.warning("immediate mail send failed: %s", str(e))
+        if n_id is not None:
+            failed_at = _utc_now_iso()
+            failed_payload = _merge_mail_meta(
+                payload,
+                immediate_attempted=True,
+                immediate_attempted_at=attempted_at,
+                immediate_sent=False,
+                immediate_error=str(e),
+                last_attempt_type="immediate",
+                last_attempt_at=failed_at,
+                last_attempt_success=False,
+                channel=_mail_channel_name(),
+            )
+            supabase.table("notification_queue").update({"status": "failed", "payload": failed_payload}).eq(
+                "notification_id", n_id
+            ).execute()
 
 
 def _enqueue_and_maybe_send(event_type: str, user_id: str, payload: dict):
-    try:
-        inserted = (
-            supabase.table("notification_queue")
-            .insert(
-                {
-                    "event_type": event_type,
-                    "user_id": user_id,
-                    "payload": payload,
-                    "status": "pending",
-                }
+    recipients = [str(user_id)]
+    admin_ids = _load_admin_mail_recipient_ids()
+    for aid in admin_ids:
+        if aid not in recipients:
+            recipients.append(aid)
+
+    inserted_rows: list[tuple[str, dict, Optional[int]]] = []
+    for rid in recipients:
+        p = dict(payload or {})
+        if rid in admin_ids and rid != str(user_id):
+            p["admin_copy"] = True
+        try:
+            inserted = (
+                supabase.table("notification_queue")
+                .insert(
+                    {
+                        "event_type": event_type,
+                        "user_id": rid,
+                        "payload": p,
+                        "status": "pending",
+                    }
+                )
+                .execute()
             )
-            .execute()
-        )
-        n_id = inserted.data[0]["notification_id"] if inserted.data else None
-    except Exception as e:
-        logging.warning("notification_queue insert failed: %s", str(e))
+            n_id = inserted.data[0]["notification_id"] if inserted.data else None
+            inserted_rows.append((rid, p, n_id))
+        except Exception as e:
+            logging.warning("notification_queue insert failed: %s", str(e))
+
+    if not _mail_delivery_configured():
         return
 
-    if not (MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS):
-        return
-
-    threading.Thread(
-        target=_try_immediate_notification_mail,
-        args=(event_type, user_id, payload, n_id),
-        daemon=True,
-    ).start()
+    for rid, p, n_id in inserted_rows:
+        threading.Thread(
+            target=_try_immediate_notification_mail,
+            args=(event_type, rid, p, n_id),
+            daemon=True,
+        ).start()
 
 
 def _build_masked_pdf(original_pdf_bytes: bytes, ai_data: dict, extra_sensitive_terms: Optional[list[str]] = None) -> bytes:
@@ -1725,24 +1960,22 @@ async def update_my_profile(body: MyProfileUpdate):
         if (
             effective_role == "contractor"
             and body.trigger_signup_notice
-            and ADMIN_EMAIL
-            and MAIL_SMTP_HOST
-            and MAIL_SMTP_USER
-            and MAIL_SMTP_PASS
+            and _mail_delivery_configured()
         ):
             profile_after = _get_profile(body.user_id) or {}
-            subject = "[Fix&Pass] 신규 수리업체 가입 신청"
-            body_text = (
-                "새 수리업체 가입 신청이 접수되었습니다.\n\n"
-                f"- 이름: {profile_after.get('name') or '-'}\n"
-                f"- 상호: {profile_after.get('company_name') or '-'}\n"
-                f"- 소재지: {body.business_location or '-'}\n"
-                f"- 전화번호: {profile_after.get('phone_number') or '-'}\n"
-                f"- 사용자 ID: {body.user_id}\n"
-                f"- 승인 필요 설정: {'ON' if require_approval else 'OFF'}\n"
-            )
             try:
-                _send_mail(ADMIN_EMAIL, subject, body_text)
+                _enqueue_and_maybe_send(
+                    "contractor_signup_notify_admin",
+                    body.user_id,
+                    {
+                        "user_id": body.user_id,
+                        "name": profile_after.get("name") or "-",
+                        "company_name": profile_after.get("company_name") or "-",
+                        "phone_number": profile_after.get("phone_number") or "-",
+                        "business_location": body.business_location or "-",
+                        "approval_required": bool(require_approval),
+                    },
+                )
             except Exception as e:
                 logging.warning("contractor signup notify failed: %s", str(e))
         return {
@@ -2596,19 +2829,19 @@ async def create_inquiry(
         .execute()
     )
     new_id = ins.data[0]["id"] if ins.data else None
-    if ADMIN_EMAIL and MAIL_SMTP_HOST and MAIL_SMTP_USER and MAIL_SMTP_PASS:
+    if _mail_delivery_configured():
         try:
-            subj = "[Fix&Pass] 신규 고객 문의가 등록되었습니다"
-            mail_body = (
-                "안녕하세요. Fix&Pass 관리자 알림입니다.\n\n"
-                "새 고객 문의가 등록되었습니다.\n"
-                f"- 문의 ID: {new_id}\n"
-                f"- 작성자: {user['email'] or '-'}\n"
-                f"- 제목: {body.title.strip()}\n"
-                f"- 등록 시각: {datetime.utcnow().isoformat()}Z\n\n"
-                f"관리자 페이지에서 확인: /inquiry/{new_id}"
+            _enqueue_and_maybe_send(
+                "inquiry_created_notify_admin",
+                user["id"],
+                {
+                    "inquiry_id": new_id,
+                    "name": user["email"] or "-",
+                    "email": user["email"] or "-",
+                    "title": body.title.strip(),
+                    "category": "general",
+                },
             )
-            _send_mail(ADMIN_EMAIL, subj, mail_body)
         except Exception as e:
             logging.warning("new inquiry admin mail failed: %s", str(e))
     return {"status": "success", "data": {"id": new_id}}
@@ -2858,7 +3091,9 @@ async def get_admin_session(authorization: Optional[str] = Header(default=None))
         "data": {
             "is_admin": True,
             "is_master": bool(admin.get("is_master")),
-            "allowed_tabs": ["requests", "inquiries", "ops", "stats"] if admin.get("is_master") else ["requests", "inquiries"],
+            "allowed_tabs": ["requests", "inquiries", "mail", "ops", "stats"]
+            if admin.get("is_master")
+            else ["requests", "inquiries", "mail"],
             "email": admin.get("email"),
         },
     }
@@ -3180,6 +3415,73 @@ async def admin_master_grant_admin(
     return {"status": "success"}
 
 
+@app.get("/api/admin/mail-recipients")
+async def admin_list_mail_recipients(authorization: Optional[str] = Header(default=None)):
+    _require_admin(authorization)
+    users = supabase.auth.admin.list_users(page=1, per_page=1000)
+    entries = users if isinstance(users, list) else _unwrap_auth_user_list(users)
+    role_rows = supabase.table("admin_roles").select("user_id, receives_all_event_mails").execute().data or []
+    role_map = {str(r.get("user_id")): r for r in role_rows if r.get("user_id")}
+    out = []
+    for u in entries:
+        ud = u if isinstance(u, dict) else (u.model_dump() if hasattr(u, "model_dump") else {})
+        uid = str(ud.get("id") or "")
+        email = (ud.get("email") or "").lower()
+        is_master = bool(email and email == MASTER_ADMIN_EMAIL)
+        role_row = role_map.get(uid)
+        is_admin = is_master or bool(role_row)
+        if not is_admin:
+            continue
+        enabled = True if is_master else bool((role_row or {}).get("receives_all_event_mails", True))
+        out.append(
+            {
+                "user_id": uid,
+                "email": email,
+                "is_master": is_master,
+                "mail_enabled": enabled,
+            }
+        )
+    out.sort(key=lambda x: ((0 if x["is_master"] else 1), x["email"]))
+    return {"status": "success", "data": out}
+
+
+@app.post("/api/admin/master/mail-recipients")
+async def admin_master_update_mail_recipient(
+    body: AdminMailRecipientUpdate,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin = _require_admin(authorization)
+    if not admin.get("is_master"):
+        raise HTTPException(status_code=403, detail="마스터 관리자만 수신인 설정을 변경할 수 있습니다.")
+    uid = (body.user_id or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="user_id가 필요합니다.")
+    # master admin은 모든 이벤트를 기본 수신한다.
+    if uid == (_resolve_user_id_by_email(MASTER_ADMIN_EMAIL) or "") and not body.enabled:
+        raise HTTPException(status_code=400, detail="마스터 관리자 수신은 비활성화할 수 없습니다.")
+    row = supabase.table("admin_roles").select("user_id").eq("user_id", uid).limit(1).execute()
+    if not row.data:
+        raise HTTPException(status_code=404, detail="관리자 권한 계정만 수신인 설정을 변경할 수 있습니다.")
+    try:
+        supabase.table("admin_roles").update({"receives_all_event_mails": bool(body.enabled)}).eq("user_id", uid).execute()
+    except Exception as e:
+        if "receives_all_event_mails" in str(e):
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "admin_roles.receives_all_event_mails 컬럼이 없습니다. "
+                    "마이그레이션을 적용해주세요."
+                ),
+            )
+        raise e
+    _log_admin_action(
+        "update_mail_recipient",
+        admin["email"],
+        {"user_id": uid, "enabled": bool(body.enabled)},
+    )
+    return {"status": "success"}
+
+
 @app.post("/api/admin/users/{user_id}/active")
 async def admin_update_user_active(
     user_id: str,
@@ -3286,6 +3588,79 @@ async def admin_action_logs(authorization: Optional[str] = Header(default=None))
         return {"status": "success", "data": []}
 
 
+@app.get("/api/admin/mailings")
+async def admin_mailings(
+    authorization: Optional[str] = Header(default=None),
+    status: str = Query(default="ALL"),
+    event_type: str = Query(default="ALL"),
+    limit: int = Query(default=200, ge=1, le=500),
+):
+    _require_admin(authorization)
+    q = (
+        supabase.table("notification_queue")
+        .select("notification_id, event_type, user_id, payload, status, created_at")
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+    if status != "ALL":
+        q = q.eq("status", status)
+    if event_type != "ALL":
+        q = q.eq("event_type", event_type)
+    rows = q.execute().data or []
+
+    user_ids = list({str(r.get("user_id")) for r in rows if r.get("user_id")})
+    name_map: dict[str, str] = {}
+    if user_ids:
+        try:
+            pres = (
+                supabase.table("profiles")
+                .select("id, name")
+                .in_("id", user_ids)
+                .execute()
+            )
+            for p in pres.data or []:
+                name_map[str(p.get("id"))] = p.get("name") or ""
+        except Exception:
+            pass
+
+    out = []
+    for r in rows:
+        et = r.get("event_type") or ""
+        payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+        mail_meta = payload.get("_mail") if isinstance(payload.get("_mail"), dict) else {}
+        cat = MAIL_EVENT_CATALOG.get(et, {})
+        out.append(
+            {
+                **r,
+                "event_label": cat.get("label") or et,
+                "event_trigger": cat.get("trigger") or "-",
+                "recipient_type": cat.get("recipient") or "-",
+                "queue_tracked": bool(cat.get("queue_tracked", True)),
+                "recipient_name": name_map.get(str(r.get("user_id")), ""),
+                "mail_meta": {
+                    "channel": mail_meta.get("channel"),
+                    "immediate_attempted": bool(mail_meta.get("immediate_attempted")),
+                    "immediate_attempted_at": mail_meta.get("immediate_attempted_at"),
+                    "immediate_sent": bool(mail_meta.get("immediate_sent")),
+                    "immediate_sent_at": mail_meta.get("immediate_sent_at"),
+                    "immediate_error": mail_meta.get("immediate_error"),
+                    "cron_attempted_at": mail_meta.get("cron_attempted_at"),
+                    "cron_sent": bool(mail_meta.get("cron_sent")),
+                    "cron_sent_at": mail_meta.get("cron_sent_at"),
+                    "cron_error": mail_meta.get("cron_error"),
+                    "cron_attempt_count": int(mail_meta.get("cron_attempt_count") or 0),
+                    "last_attempt_type": mail_meta.get("last_attempt_type"),
+                    "last_attempt_at": mail_meta.get("last_attempt_at"),
+                    "last_attempt_success": mail_meta.get("last_attempt_success"),
+                },
+            }
+        )
+    catalog = []
+    for key, info in MAIL_EVENT_CATALOG.items():
+        catalog.append({"event_type": key, **info})
+    return {"status": "success", "data": {"rows": out, "catalog": catalog}}
+
+
 @app.post("/api/notifications/process")
 async def process_notification_queue(
     cron_secret: Optional[str] = Header(default=None, alias="cron-secret"),
@@ -3318,7 +3693,7 @@ async def process_notification_queue(
         rows = (
             supabase.table("notification_queue")
             .select("notification_id, event_type, user_id, payload, status")
-            .eq("status", "pending")
+            .in_("status", ["pending", "failed"])
             .order("created_at", desc=False)
             .limit(50)
             .execute()
@@ -3343,53 +3718,46 @@ async def process_notification_queue(
                     raise RuntimeError("user email not found")
 
                 payload = n.get("payload") or {}
-                if n["event_type"] == "first_bid_submitted":
-                    subject = "[Fix&Pass] 최초 견적 제출이 접수되었습니다"
-                    body = (
-                        "최초 견적 제출이 정상 접수되었습니다.\n\n"
-                        f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
-                        "의뢰인이 업체를 선택하면 추가 안내 메일이 발송됩니다."
-                    )
-                elif n["event_type"] == "requester_selected_partner":
-                    subject = "[Fix&Pass] 의뢰인이 업체를 선택했습니다"
-                    body = (
-                        "축하합니다. 제출하신 견적이 의뢰인에게 선택되었습니다.\n\n"
-                        f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
-                        f"- 선택된 견적 ID: {payload.get('selected_bid_id')}\n"
-                        "서비스에서 상세 진행 상태를 확인해주세요."
-                    )
-                elif n["event_type"] == "new_request_in_interest_region":
-                    subject = "[Fix&Pass] 신규 견적 요청이 등록되었습니다"
-                    body = (
-                        "안녕하세요. Fix&Pass 알림입니다.\n\n"
-                        "관심 지역에 새로운 견적 요청이 등록되었습니다.\n"
-                        f"- 현장 별칭: {payload.get('site_alias')}\n"
-                        f"- 요청 ID: {payload.get('repair_request_id')}\n"
-                        f"- 지역: {payload.get('region_summary')}\n"
-                        "수리 마켓에서 상세 내용을 확인해 주세요."
-                    )
-                elif n["event_type"] == "new_bid_for_requester":
-                    action = payload.get("action") or "created"
-                    action_kr = "신규 등록" if action == "created" else "수정"
-                    subject = f"[Fix&Pass] 요청하신 건에 견적이 {action_kr}되었습니다"
-                    body = (
-                        "안녕하세요. Fix&Pass 알림입니다.\n\n"
-                        f"요청하신 수리 건에 견적이 {action_kr}되었습니다.\n"
-                        f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
-                        f"- 견적 ID: {payload.get('bid_id')}\n"
-                        f"- 견적 금액: {payload.get('bid_amount')}\n\n"
-                        "내 요청 내역에서 상세 견적을 확인해 주세요."
-                    )
-                else:
-                    subject = "[Fix&Pass] 알림"
-                    body = f"새 알림이 도착했습니다. event_type={n['event_type']}"
+                subject, body = _build_notification_mail(n["event_type"], payload)
 
                 _send_mail(email, subject, body)
-                supabase.table("notification_queue").update({"status": "sent"}).eq("notification_id", n_id).execute()
+                done_at = _utc_now_iso()
+                prev_meta = payload.get("_mail") if isinstance(payload.get("_mail"), dict) else {}
+                tries = int(prev_meta.get("cron_attempt_count") or 0)
+                sent_payload = _merge_mail_meta(
+                    payload,
+                    cron_attempted_at=done_at,
+                    cron_attempt_count=tries + 1,
+                    cron_sent=True,
+                    cron_sent_at=done_at,
+                    cron_error=None,
+                    last_attempt_type="cron",
+                    last_attempt_at=done_at,
+                    last_attempt_success=True,
+                    channel=_mail_channel_name(),
+                )
+                supabase.table("notification_queue").update({"status": "sent", "payload": sent_payload}).eq(
+                    "notification_id", n_id
+                ).execute()
                 processed += 1
             except Exception as e:
+                failed_at = _utc_now_iso()
+                payload = n.get("payload") or {}
+                prev_meta = payload.get("_mail") if isinstance(payload.get("_mail"), dict) else {}
+                tries = int(prev_meta.get("cron_attempt_count") or 0)
+                failed_payload = _merge_mail_meta(
+                    payload,
+                    cron_attempted_at=failed_at,
+                    cron_attempt_count=tries + 1,
+                    cron_sent=False,
+                    cron_error=str(e),
+                    last_attempt_type="cron",
+                    last_attempt_at=failed_at,
+                    last_attempt_success=False,
+                    channel=_mail_channel_name(),
+                )
                 supabase.table("notification_queue").update(
-                    {"status": "failed", "payload": {**(n.get("payload") or {}), "error": str(e)}}
+                    {"status": "failed", "payload": failed_payload}
                 ).eq("notification_id", n_id).execute()
                 failed += 1
         return {"status": "success", "data": {"processed": processed, "failed": failed}}
