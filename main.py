@@ -104,6 +104,12 @@ MAIL_EVENT_CATALOG = {
         "recipient": "수리업체",
         "queue_tracked": True,
     },
+    "matched_requester_followup_notice": {
+        "label": "업체 선정 후 의뢰인 안내",
+        "trigger": "의뢰인이 업체를 선택 완료하면 의뢰인 본인에게 안내 메일",
+        "recipient": "수리요청인",
+        "queue_tracked": True,
+    },
     "contractor_signup_notify_admin": {
         "label": "수리업체 가입신청 관리자 알림",
         "trigger": "수리업체 가입신청 시 관리자에게 즉시 발송",
@@ -166,6 +172,16 @@ def _build_notification_mail(event_type: str, payload: dict) -> tuple[str, str]:
                 f"- 수리요청 ID: {payload.get('repair_request_id')}\n"
                 f"- 선택된 견적 ID: {payload.get('selected_bid_id')}\n"
                 "서비스에서 상세 진행 상태를 확인해주세요."
+            ),
+        )
+    if event_type == "matched_requester_followup_notice":
+        return (
+            "[Fix&Pass] 업체 선정이 완료되었습니다",
+            (
+                "선택하신 수리업체와 연락하시어 내방 일정을 잡으시고, "
+                "내방 및 검토 후 최종견적액과 후기를 플랫폼에도 알려주세요.\n\n"
+                f"- 수리요청 ID: {payload.get('repair_request_id')}\n\n"
+                "내 요청 상세에서 후속 절차를 진행할 수 있습니다."
             ),
         )
     if event_type == "new_bid_for_requester":
@@ -688,6 +704,26 @@ def _request_stage_kr(status: str) -> str:
     return mapping.get(status, status)
 
 
+def _request_status_label_kr(status: str, bid_count: Optional[int] = None) -> str:
+    """의뢰인 화면용 짧은 한글 상태 표시. bidding일 때 bid_count로 세분화."""
+    st = status or ""
+    if st == "bidding" and bid_count is not None:
+        if bid_count <= 0:
+            return "견적 진행 중"
+        if bid_count == 1:
+            return "첫 견적 제출됨 · 추가 견적 접수 중"
+        return f"견적 {bid_count}건 제출됨 · 진행 중"
+    return {
+        "draft": "견적 요청 비정상",
+        "requested": "업체 견적 대기 중",
+        "bidding": "견적 진행 중",
+        "matched": "최초견적액 기반 업체 선택 완료",
+        "repairing": "현장 진행 중",
+        "completed": "작업 완료",
+        "cancelled": "취소됨",
+    }.get(st, st)
+
+
 def _load_analysis_rules_text() -> str:
     try:
         return ANALYSIS_RULES_PATH.read_text(encoding="utf-8")
@@ -832,6 +868,18 @@ def _parse_iso_date_only(raw: str) -> str:
         return s
     except Exception:
         raise HTTPException(status_code=400, detail="날짜는 YYYY-MM-DD 형식으로 입력해주세요.")
+
+
+def _min_site_visit_date_str(contact_unlocked_at: Optional[str]) -> Optional[str]:
+    """업체 선정(연락 공개) 시각 이후 날짜만 내방 일자로 허용."""
+    if not contact_unlocked_at:
+        return None
+    try:
+        s = str(contact_unlocked_at).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        return dt.date().isoformat()
+    except Exception:
+        return None
 
 
 def _masked_partner_label(partner_id: str, request_id: int) -> str:
@@ -990,7 +1038,14 @@ def _try_immediate_notification_mail(event_type: str, user_id: str, payload: dic
             ).execute()
 
 
-def _enqueue_and_maybe_send(event_type: str, user_id: str, payload: dict):
+def _enqueue_and_maybe_send(
+    event_type: str,
+    user_id: str,
+    payload: dict,
+    *,
+    event_group_id: Optional[str] = None,
+):
+    group_id = event_group_id or str(uuid.uuid4())
     recipients = [str(user_id)]
     admin_ids = _load_admin_mail_recipient_ids()
     for aid in admin_ids:
@@ -1000,6 +1055,7 @@ def _enqueue_and_maybe_send(event_type: str, user_id: str, payload: dict):
     inserted_rows: list[tuple[str, dict, Optional[int]]] = []
     for rid in recipients:
         p = dict(payload or {})
+        p.setdefault("event_group_id", group_id)
         if rid in admin_ids and rid != str(user_id):
             p["admin_copy"] = True
         try:
@@ -1587,6 +1643,7 @@ async def update_request(req: UpdateRequest):
                 region = row.get("region_summary", "")
                 region_norm = _normalize_region_summary(region)
                 try:
+                    event_gid = str(uuid.uuid4())
                     partners = (
                         supabase.table("partner_profiles")
                         .select("partner_id, service_regions")
@@ -1604,7 +1661,9 @@ async def update_request(req: UpdateRequest):
                                 "repair_request_id": req.repair_request_id,
                                 "region_summary": region_norm,
                                 "site_alias": _site_alias(req.repair_request_id),
+                                "trigger": {"user_id": req.requester_id, "role": "requester"},
                             },
+                            event_group_id=event_gid,
                         )
                 except Exception:
                     pass
@@ -1612,13 +1671,16 @@ async def update_request(req: UpdateRequest):
             requester_profile = _get_profile(req.requester_id) or {}
             requester_name = requester_profile.get("name") or "수리요청인"
             try:
+                notice_gid = str(uuid.uuid4())
                 _enqueue_and_maybe_send(
                     "request_submitted_notice",
                     req.requester_id,
                     {
                         "repair_request_id": req.repair_request_id,
                         "requester_name": requester_name,
+                        "trigger": {"user_id": req.requester_id, "role": "requester"},
                     },
+                    event_group_id=notice_gid,
                 )
             except Exception:
                 pass
@@ -1974,6 +2036,7 @@ async def update_my_profile(body: MyProfileUpdate):
                         "phone_number": profile_after.get("phone_number") or "-",
                         "business_location": body.business_location or "-",
                         "approval_required": bool(require_approval),
+                        "trigger": {"user_id": body.user_id, "role": "contractor"},
                     },
                 )
             except Exception as e:
@@ -2019,7 +2082,29 @@ async def get_my_requests(requester_id: str):
             .order("created_at", desc=True)
             .execute()
         )
-        return {"status": "success", "data": res.data}
+        rows = res.data or []
+        ids = [r["repair_request_id"] for r in rows if r.get("repair_request_id") is not None]
+        bc_map: dict[int, int] = defaultdict(int)
+        if ids:
+            try:
+                all_b = (
+                    supabase.table("bids")
+                    .select("repair_request_id")
+                    .in_("repair_request_id", ids)
+                    .execute()
+                )
+                for b in all_b.data or []:
+                    rid = b.get("repair_request_id")
+                    if rid is not None:
+                        bc_map[int(rid)] += 1
+            except Exception:
+                pass
+        for row in rows:
+            rid = row.get("repair_request_id")
+            n = bc_map.get(int(rid), 0) if rid is not None else 0
+            row["bid_count"] = n
+            row["status_label_kr"] = _request_status_label_kr(row.get("status") or "", n)
+        return {"status": "success", "data": rows}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -2043,6 +2128,16 @@ async def get_request_detail(request_id: int, requester_id: str):
         row["selected_items_mandatory"] = spl["mandatory"]
         row["selected_items_optional"] = spl["optional"]
         row["selected_items_unspecified"] = spl["unspecified"]
+        row["min_site_visit_date"] = _min_site_visit_date_str(row.get("contact_unlocked_at"))
+        bc = (
+            supabase.table("bids")
+            .select("bid_id")
+            .eq("repair_request_id", request_id)
+            .execute()
+        )
+        bid_n = len(bc.data or [])
+        row["bid_count"] = bid_n
+        row["status_label_kr"] = _request_status_label_kr(row.get("status") or "", bid_n)
         return {"status": "success", "data": row}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2100,6 +2195,16 @@ async def get_bids_for_request(request_id: int, requester_id: str):
                     "review_count": int(rating_info["review_count"]),
                     "is_selected": is_selected,
                     "partner_masked": mask_partner,
+                    "site_visit_date": b.get("site_visit_date"),
+                    "final_bid_amount": b.get("final_bid_amount"),
+                    "variance_reason": b.get("variance_reason"),
+                    "contractor_extra_note": b.get("contractor_extra_note"),
+                    "requester_site_visit_date": b.get("requester_site_visit_date"),
+                    "requester_final_bid_amount": b.get("requester_final_bid_amount"),
+                    "requester_variance_note": b.get("requester_variance_note"),
+                    "requester_visit_review": b.get("requester_visit_review"),
+                    "contractor_progress_locked_at": b.get("contractor_progress_locked_at"),
+                    "requester_progress_locked_at": b.get("requester_progress_locked_at"),
                 }
             )
         return {"status": "success", "data": processed_bids}
@@ -2148,6 +2253,18 @@ async def cancel_request(request_id: int, requester_id: str):
             return {"status": "success"}
         if status not in ["requested", "bidding"]:
             raise HTTPException(status_code=400, detail="현재 상태에서는 취소할 수 없습니다.")
+        bid_cnt = (
+            supabase.table("bids")
+            .select("bid_id")
+            .eq("repair_request_id", request_id)
+            .limit(1)
+            .execute()
+        )
+        if bid_cnt.data:
+            raise HTTPException(
+                status_code=400,
+                detail="이미 견적이 제출된 요청은 취소할 수 없습니다.",
+            )
         supabase.table("repair_requests").update({"status": "cancelled"}).eq("repair_request_id", request_id).execute()
         return {"status": "success"}
     except HTTPException as e:
@@ -2266,7 +2383,8 @@ async def get_market_detail(request_id: int, partner_id: str):
             supabase.table("repair_requests")
             .select(
                 "repair_request_id, status, region_summary, building_name, address_detail, parking_type, "
-                "selected_items, selected_bid_ids, parsed_data, created_at, quote_deadline_at, requester_id"
+                "selected_items, selected_bid_ids, parsed_data, created_at, quote_deadline_at, requester_id, "
+                "contact_unlocked_at"
             )
             .eq("repair_request_id", request_id)
             .execute()
@@ -2296,6 +2414,7 @@ async def get_market_detail(request_id: int, partner_id: str):
         if selected_ids and (not my_bid_id or my_bid_id not in selected_ids):
             data["my_bid_status"] = "타업체 선정됨"
         data["request_stage_kr"] = _request_stage_kr(st)
+        data["min_site_visit_date"] = _min_site_visit_date_str(data.get("contact_unlocked_at"))
         pd = data.get("parsed_data")
         spl = _split_selected_items(pd if isinstance(pd, dict) else None, data.get("selected_items"))
         data["selected_items_mandatory"] = spl["mandatory"]
@@ -2404,6 +2523,7 @@ async def submit_bid(bid: BidSubmission):
                 {
                     "repair_request_id": bid.repair_request_id,
                     "bid_id": res.data[0].get("bid_id"),
+                    "trigger": {"user_id": bid.partner_id, "role": "contractor"},
                 },
             )
         # 의뢰인에게 신규 견적 등록 알림
@@ -2423,6 +2543,7 @@ async def submit_bid(bid: BidSubmission):
                     "bid_id": res.data[0].get("bid_id"),
                     "bid_amount": f"{int(bid.bid_amount):,}원",
                     "action": bid_action,
+                    "trigger": {"user_id": bid.partner_id, "role": "contractor"},
                 },
             )
         return {"status": "success", "data": res.data[0]}
@@ -2461,6 +2582,7 @@ async def match_partners(data: MatchPartners):
                 .in_("bid_id", data.selected_bid_ids)
                 .execute()
             )
+            match_gid = str(uuid.uuid4())
             for b in selected_bids.data or []:
                 _enqueue_and_maybe_send(
                     "requester_selected_partner",
@@ -2468,8 +2590,22 @@ async def match_partners(data: MatchPartners):
                     {
                         "repair_request_id": data.repair_request_id,
                         "selected_bid_id": b.get("bid_id"),
+                        "trigger": {"user_id": data.requester_id, "role": "requester"},
                     },
+                    event_group_id=match_gid,
                 )
+            try:
+                _enqueue_and_maybe_send(
+                    "matched_requester_followup_notice",
+                    data.requester_id,
+                    {
+                        "repair_request_id": data.repair_request_id,
+                        "trigger": {"user_id": data.requester_id, "role": "requester"},
+                    },
+                    event_group_id=match_gid,
+                )
+            except Exception:
+                pass
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2488,7 +2624,9 @@ async def contractor_submit_final_quote(body: ContractorBidFinal):
             raise HTTPException(status_code=400, detail="최초 견적 대비 변동 사유를 입력해주세요.")
         bid_res = (
             supabase.table("bids")
-            .select("bid_id, partner_id, repair_request_id")
+            .select(
+                "bid_id, partner_id, repair_request_id, contractor_progress_locked_at, requester_progress_locked_at"
+            )
             .eq("bid_id", body.bid_id)
             .eq("partner_id", body.partner_id)
             .limit(1)
@@ -2496,10 +2634,13 @@ async def contractor_submit_final_quote(body: ContractorBidFinal):
         )
         if not bid_res.data:
             raise HTTPException(status_code=404, detail="견적 정보를 찾을 수 없습니다.")
+        b0 = bid_res.data[0]
+        if b0.get("contractor_progress_locked_at"):
+            raise HTTPException(status_code=400, detail="최종 견적·내방 정보는 이미 제출되어 수정할 수 없습니다.")
         rr_res = (
             supabase.table("repair_requests")
-            .select("repair_request_id, status, selected_bid_ids")
-            .eq("repair_request_id", bid_res.data[0]["repair_request_id"])
+            .select("repair_request_id, status, selected_bid_ids, contact_unlocked_at")
+            .eq("repair_request_id", b0["repair_request_id"])
             .limit(1)
             .execute()
         )
@@ -2512,13 +2653,21 @@ async def contractor_submit_final_quote(body: ContractorBidFinal):
         if body.bid_id not in sel:
             raise HTTPException(status_code=403, detail="선정된 견적만 제출할 수 있습니다.")
         visit = _parse_iso_date_only(body.site_visit_date)
+        min_visit = _min_site_visit_date_str(rr.get("contact_unlocked_at"))
+        if min_visit and visit < min_visit:
+            raise HTTPException(
+                status_code=400,
+                detail=f"내방 일자는 업체 선정일({min_visit}) 이후로 선택해 주세요.",
+            )
+        now_iso = datetime.utcnow().isoformat() + "Z"
         supabase.table("bids").update(
             {
                 "site_visit_date": visit,
                 "final_bid_amount": int(body.final_bid_amount),
                 "variance_reason": vr,
                 "contractor_extra_note": (body.contractor_extra_note or "").strip() or None,
-                "bid_progress_updated_at": datetime.utcnow().isoformat() + "Z",
+                "bid_progress_updated_at": now_iso,
+                "contractor_progress_locked_at": now_iso,
             }
         ).eq("bid_id", body.bid_id).execute()
         return {"status": "success"}
@@ -2540,7 +2689,7 @@ async def requester_submit_bid_fields(request_id: int, bid_id: int, body: Reques
             raise HTTPException(status_code=400, detail="최종견적액은 0보다 커야 합니다.")
         rr_res = (
             supabase.table("repair_requests")
-            .select("repair_request_id, requester_id, status, selected_bid_ids")
+            .select("repair_request_id, requester_id, status, selected_bid_ids, contact_unlocked_at")
             .eq("repair_request_id", request_id)
             .limit(1)
             .execute()
@@ -2553,7 +2702,7 @@ async def requester_submit_bid_fields(request_id: int, bid_id: int, body: Reques
             raise HTTPException(status_code=400, detail="선정된 업체 견적만 입력할 수 있습니다.")
         bid_chk = (
             supabase.table("bids")
-            .select("bid_id")
+            .select("bid_id, requester_progress_locked_at")
             .eq("bid_id", bid_id)
             .eq("repair_request_id", request_id)
             .limit(1)
@@ -2561,14 +2710,24 @@ async def requester_submit_bid_fields(request_id: int, bid_id: int, body: Reques
         )
         if not bid_chk.data:
             raise HTTPException(status_code=404, detail="견적을 찾을 수 없습니다.")
+        if bid_chk.data[0].get("requester_progress_locked_at"):
+            raise HTTPException(status_code=400, detail="의뢰인 확인 정보는 이미 제출되어 수정할 수 없습니다.")
         visit = _parse_iso_date_only(body.requester_site_visit_date)
+        min_visit = _min_site_visit_date_str(rr.get("contact_unlocked_at"))
+        if min_visit and visit < min_visit:
+            raise HTTPException(
+                status_code=400,
+                detail=f"내방 일자는 업체 선정일({min_visit}) 이후로 선택해 주세요.",
+            )
+        now_iso = datetime.utcnow().isoformat() + "Z"
         supabase.table("bids").update(
             {
                 "requester_site_visit_date": visit,
                 "requester_final_bid_amount": int(body.requester_final_bid_amount),
                 "requester_variance_note": (body.requester_variance_note or "").strip() or None,
                 "requester_visit_review": (body.requester_visit_review or "").strip() or None,
-                "bid_progress_updated_at": datetime.utcnow().isoformat() + "Z",
+                "bid_progress_updated_at": now_iso,
+                "requester_progress_locked_at": now_iso,
             }
         ).eq("bid_id", bid_id).execute()
         return {"status": "success"}
@@ -2840,6 +2999,7 @@ async def create_inquiry(
                     "email": user["email"] or "-",
                     "title": body.title.strip(),
                     "category": "general",
+                    "trigger": {"user_id": user["id"], "role": "requester"},
                 },
             )
         except Exception as e:
@@ -3091,9 +3251,9 @@ async def get_admin_session(authorization: Optional[str] = Header(default=None))
         "data": {
             "is_admin": True,
             "is_master": bool(admin.get("is_master")),
-            "allowed_tabs": ["requests", "inquiries", "mail", "ops", "stats"]
+            "allowed_tabs": ["requests", "inquiries", "mail", "post_match", "ops", "stats"]
             if admin.get("is_master")
-            else ["requests", "inquiries", "mail"],
+            else ["requests", "inquiries", "mail", "post_match"],
             "email": admin.get("email"),
         },
     }
@@ -3588,6 +3748,30 @@ async def admin_action_logs(authorization: Optional[str] = Header(default=None))
         return {"status": "success", "data": []}
 
 
+def _mailing_event_actor_row(payload: dict, name_map: dict[str, str]) -> dict:
+    """payload.trigger 기준 이벤트를 유발한 사용자 표시."""
+    trig = payload.get("trigger") if isinstance(payload.get("trigger"), dict) else {}
+    uid = str(trig.get("user_id") or "").strip()
+    role = str(trig.get("role") or "").strip()
+    role_kr = {"requester": "수리 의뢰인", "contractor": "수리 업체"}.get(role, role or "")
+    nm = (name_map.get(uid) or "").strip()
+    if nm and role_kr:
+        label = f"{nm} ({role_kr})"
+    elif nm:
+        label = nm
+    elif uid:
+        label = f"{uid[:8]}… ({role_kr})" if role_kr else uid
+    else:
+        label = "-"
+    return {
+        "trigger_user_id": uid or None,
+        "trigger_role": role or None,
+        "trigger_role_kr": role_kr or None,
+        "trigger_name": nm or None,
+        "event_actor_label": label,
+    }
+
+
 @app.get("/api/admin/mailings")
 async def admin_mailings(
     authorization: Optional[str] = Header(default=None),
@@ -3609,17 +3793,27 @@ async def admin_mailings(
     rows = q.execute().data or []
 
     user_ids = list({str(r.get("user_id")) for r in rows if r.get("user_id")})
+    trigger_ids: set[str] = set()
+    for r in rows:
+        pld = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+        t = pld.get("trigger") if isinstance(pld.get("trigger"), dict) else {}
+        u = str(t.get("user_id") or "").strip()
+        if u:
+            trigger_ids.add(u)
+    user_ids.extend(list(trigger_ids))
     name_map: dict[str, str] = {}
     if user_ids:
         try:
             pres = (
                 supabase.table("profiles")
-                .select("id, name")
-                .in_("id", user_ids)
+                .select("id, name, company_name")
+                .in_("id", list(dict.fromkeys(user_ids)))
                 .execute()
             )
             for p in pres.data or []:
-                name_map[str(p.get("id"))] = p.get("name") or ""
+                pid = str(p.get("id"))
+                nm = (p.get("company_name") or p.get("name") or "").strip()
+                name_map[pid] = nm
         except Exception:
             pass
 
@@ -3628,12 +3822,17 @@ async def admin_mailings(
         et = r.get("event_type") or ""
         payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
         mail_meta = payload.get("_mail") if isinstance(payload.get("_mail"), dict) else {}
+        egid = payload.get("event_group_id") or f"single-{r.get('notification_id')}"
+        actor_fields = _mailing_event_actor_row(payload, name_map)
         cat = MAIL_EVENT_CATALOG.get(et, {})
         out.append(
             {
                 **r,
+                "event_group_id": egid,
+                "is_admin_copy": bool(payload.get("admin_copy")),
+                **actor_fields,
                 "event_label": cat.get("label") or et,
-                "event_trigger": cat.get("trigger") or "-",
+                "event_trigger_catalog": cat.get("trigger") or "-",
                 "recipient_type": cat.get("recipient") or "-",
                 "queue_tracked": bool(cat.get("queue_tracked", True)),
                 "recipient_name": name_map.get(str(r.get("user_id")), ""),
@@ -3655,10 +3854,137 @@ async def admin_mailings(
                 },
             }
         )
+    groups_map: dict[str, list] = defaultdict(list)
+    for item in out:
+        groups_map[item["event_group_id"]].append(item)
+
+    groups_out: list[dict] = []
+    for gid, members in groups_map.items():
+        members_sorted = sorted(members, key=lambda x: str(x.get("created_at") or ""), reverse=True)
+        created_max = max((str(m.get("created_at") or "") for m in members), default="")
+        status_counts: dict[str, int] = defaultdict(int)
+        for m in members:
+            status_counts[str(m.get("status") or "")] += 1
+        et_lines: dict[str, str] = {}
+        for m in members:
+            et = m.get("event_type") or ""
+            if et not in et_lines:
+                cat = MAIL_EVENT_CATALOG.get(et, {})
+                et_lines[et] = cat.get("label") or et
+        actor = next((m for m in members if (m.get("trigger_user_id"))), members[0])
+        groups_out.append(
+            {
+                "event_group_id": gid,
+                "created_at": created_max,
+                "event_type_labels": [{"event_type": k, "label": v} for k, v in et_lines.items()],
+                "event_actor_label": actor.get("event_actor_label") or "-",
+                "trigger_user_id": actor.get("trigger_user_id"),
+                "trigger_name": actor.get("trigger_name"),
+                "trigger_role_kr": actor.get("trigger_role_kr"),
+                "recipient_count": len(members),
+                "status_counts": dict(status_counts),
+                "members": members_sorted,
+            }
+        )
+    groups_out.sort(key=lambda g: g.get("created_at") or "", reverse=True)
+
     catalog = []
     for key, info in MAIL_EVENT_CATALOG.items():
         catalog.append({"event_type": key, **info})
-    return {"status": "success", "data": {"rows": out, "catalog": catalog}}
+    return {
+        "status": "success",
+        "data": {"groups": groups_out, "rows": out, "catalog": catalog},
+    }
+
+
+@app.get("/api/admin/match-progress")
+async def admin_match_progress(
+    authorization: Optional[str] = Header(default=None),
+    limit: int = Query(default=100, ge=1, le=300),
+):
+    """선정 이후 내방·최종견적·의뢰인 확인 정보를 관리자가 조회한다."""
+    _require_admin(authorization)
+    res = (
+        supabase.table("repair_requests")
+        .select(
+            "repair_request_id, status, building_name, region_summary, requester_id, "
+            "selected_bid_ids, contact_unlocked_at, created_at"
+        )
+        .in_("status", ["matched", "repairing", "completed"])
+        .order("contact_unlocked_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    req_rows = res.data or []
+    out: list[dict] = []
+    requester_ids = list({str(r.get("requester_id")) for r in req_rows if r.get("requester_id")})
+    req_names: dict[str, str] = {}
+    if requester_ids:
+        try:
+            pr = (
+                supabase.table("profiles")
+                .select("id, name, company_name, phone_number")
+                .in_("id", requester_ids)
+                .execute()
+            )
+            for p in pr.data or []:
+                req_names[str(p.get("id"))] = (p.get("name") or "").strip()
+        except Exception:
+            pass
+
+    for r in req_rows:
+        sel = r.get("selected_bid_ids") or []
+        if not sel:
+            continue
+        bids_res = (
+            supabase.table("bids")
+            .select(
+                "bid_id, partner_id, bid_amount, site_visit_date, final_bid_amount, variance_reason, contractor_extra_note, "
+                "requester_site_visit_date, requester_final_bid_amount, requester_variance_note, requester_visit_review, "
+                "contractor_progress_locked_at, requester_progress_locked_at"
+            )
+            .in_("bid_id", sel)
+            .execute()
+        )
+        bid_list = bids_res.data or []
+        partner_ids = list({str(b.get("partner_id")) for b in bid_list if b.get("partner_id")})
+        co_names: dict[str, str] = {}
+        if partner_ids:
+            try:
+                cp = (
+                    supabase.table("profiles")
+                    .select("id, company_name, name, phone_number")
+                    .in_("id", partner_ids)
+                    .execute()
+                )
+                for p in cp.data or []:
+                    co_names[str(p.get("id"))] = (p.get("company_name") or p.get("name") or "").strip()
+            except Exception:
+                pass
+        enriched_bids = []
+        for b in bid_list:
+            pid = str(b.get("partner_id") or "")
+            enriched_bids.append(
+                {
+                    **b,
+                    "partner_company_name": co_names.get(pid) or "",
+                }
+            )
+        rid = str(r.get("requester_id") or "")
+        out.append(
+            {
+                "repair_request_id": r.get("repair_request_id"),
+                "status": r.get("status"),
+                "building_name": r.get("building_name"),
+                "region_summary": r.get("region_summary"),
+                "requester_id": r.get("requester_id"),
+                "requester_name": req_names.get(rid) or "",
+                "contact_unlocked_at": r.get("contact_unlocked_at"),
+                "created_at": r.get("created_at"),
+                "bids": enriched_bids,
+            }
+        )
+    return {"status": "success", "data": out}
 
 
 @app.post("/api/notifications/process")

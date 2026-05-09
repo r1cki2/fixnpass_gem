@@ -226,6 +226,12 @@ export default function IntroPage() {
         <header className="text-center mb-12">
           <h1 className="text-4xl font-extrabold text-blue-600 mb-2 tracking-tight">Fix&Pass</h1>
           <p className="text-lg text-slate-500 font-medium">기계식 주차장 안전검사 AI 분석 및 견적 비교</p>
+          <div className="mt-6 mx-auto max-w-xl rounded-2xl border-2 border-amber-400 bg-amber-50 px-5 py-4 text-left shadow-sm">
+            <p className="text-sm font-bold text-amber-900 leading-relaxed">
+              현재는 공단의 정밀안전검사 부적합 건에 대해서만 분석 가능합니다.
+            </p>
+            <p className="text-xs font-semibold text-amber-800/90 mt-2">(정기검사는 추후 서비스 제공 예정입니다.)</p>
+          </div>
         </header>
 
         {!analysisResult ? (

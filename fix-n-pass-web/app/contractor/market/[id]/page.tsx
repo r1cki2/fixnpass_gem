@@ -5,6 +5,9 @@ import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, CheckCircle2, DollarSign, Send, Loader2, Info, AlertTriangle, Lock, Phone, Building2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
+const FINAL_CONTRACT_DISCLAIMER =
+  "내방 후 제출하신 최종견적에 따라 최종 계약까지 이루어지지 않을 수 있습니다. 내방 일정 수립 및 내방 후 최종견적액 산정 전 주의 부탁드립니다.";
+
 export default function ContractorBidPage() {
   const params = useParams();
   const router = useRouter();
@@ -67,6 +70,18 @@ export default function ContractorBidPage() {
   }, [loadDetail]);
 
   useEffect(() => {
+    if (!req?.show_requester_contact || !partnerId) return;
+    const key = `fp_final_disc_contact_${requestId}_${partnerId}`;
+    try {
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, "1");
+    } catch {
+      return;
+    }
+    alert(FINAL_CONTRACT_DISCLAIMER);
+  }, [req?.show_requester_contact, requestId, partnerId]);
+
+  useEffect(() => {
     const b = req?.my_bid;
     if (!b) return;
     setProgVisit(b.site_visit_date ? String(b.site_visit_date).slice(0, 10) : "");
@@ -83,6 +98,14 @@ export default function ContractorBidPage() {
 
   const saveFinalQuote = async () => {
     if (!partnerId || !req?.my_bid?.bid_id) return;
+    if (req.my_bid.contractor_progress_locked_at) {
+      alert("이미 제출되어 수정할 수 없습니다.");
+      return;
+    }
+    const ok = confirm(
+      `${FINAL_CONTRACT_DISCLAIMER}\n\n최종 정보를 저장하면 수정할 수 없습니다. 계속하시겠습니까?`
+    );
+    if (!ok) return;
     const vd = progVisit.trim();
     const digits = toDigits(progFinal);
     const vr = progVar.trim();
@@ -117,7 +140,6 @@ export default function ContractorBidPage() {
   };
 
   const handleSubmitBid = async () => {
-    // 팝업 안내 로직 추가
     if (hasBid && !canEdit) {
       alert('견적액 수정은 1회까지만 가능합니다.');
       return;
@@ -128,6 +150,13 @@ export default function ContractorBidPage() {
     }
     
     if (!toDigits(amount)) return alert('견적 금액을 입력해주세요.');
+
+    if (!hasBid) {
+      const ok = confirm(
+        `${FINAL_CONTRACT_DISCLAIMER}\n\n최초 견적을 제출하시겠습니까?`
+      );
+      if (!ok) return;
+    }
     
     setIsSubmitting(true);
     try {
@@ -258,17 +287,27 @@ export default function ContractorBidPage() {
                 </div>
               </div>
               <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-900 leading-relaxed">
-                수리 요청인께 연락하시어 내방 일정을 잡으시고, 내방 및 검토 후 최종견적액을 저희에게도 알려주세요.
+                수리 의뢰인께 연락하시어 내방 일정을 잡으시고, 내방 및 검토 후 최종견적액을 플랫폼에도 알려주세요.
               </div>
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6 space-y-4">
                 <h4 className="font-black text-slate-900">최종 견적 · 현장 내방 정보 등록</h4>
+                {req.my_bid?.contractor_progress_locked_at ? (
+                  <p className="text-xs font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg px-3 py-2">
+                    제출이 완료되어 이 항목은 더 이상 수정할 수 없습니다.
+                  </p>
+                ) : null}
                 <label className="block text-xs font-bold text-slate-600">최종견적액 산정 위한 현장 내방 일자 (필수)</label>
                 <input
                   type="date"
+                  min={req.min_site_visit_date || undefined}
                   value={progVisit}
                   onChange={(e) => setProgVisit(e.target.value)}
-                  className="w-full border rounded-xl px-4 py-3 text-sm font-semibold"
+                  disabled={!!req.my_bid?.contractor_progress_locked_at}
+                  className="w-full border rounded-xl px-4 py-3 text-sm font-semibold disabled:bg-slate-100 disabled:text-slate-500"
                 />
+                {req.min_site_visit_date ? (
+                  <p className="text-[11px] text-slate-500">내방 일자는 업체 선정일({req.min_site_visit_date}) 이후만 선택할 수 있습니다.</p>
+                ) : null}
                 <label className="block text-xs font-bold text-slate-600">최종견적액 (필수)</label>
                 <input
                   type="text"
@@ -276,14 +315,16 @@ export default function ContractorBidPage() {
                   value={formatWon(progFinal)}
                   onChange={(e) => setProgFinal(formatWon(e.target.value))}
                   placeholder="금액 (원)"
-                  className="w-full border rounded-xl px-4 py-3 text-lg font-black"
+                  disabled={!!req.my_bid?.contractor_progress_locked_at}
+                  className="w-full border rounded-xl px-4 py-3 text-lg font-black disabled:bg-slate-100 disabled:text-slate-500"
                 />
                 <label className="block text-xs font-bold text-slate-600">최초견적액 대비 최종견적액 변동 사유 (필수)</label>
                 <textarea
                   value={progVar}
                   onChange={(e) => setProgVar(e.target.value)}
                   rows={3}
-                  className="w-full border rounded-xl px-4 py-3 text-sm"
+                  disabled={!!req.my_bid?.contractor_progress_locked_at}
+                  className="w-full border rounded-xl px-4 py-3 text-sm disabled:bg-slate-100 disabled:text-slate-500"
                   placeholder="변동 사유를 입력해주세요."
                 />
                 <label className="block text-xs font-bold text-slate-600">현장 내방 후기 및 기타 의견 (선택)</label>
@@ -291,12 +332,13 @@ export default function ContractorBidPage() {
                   value={progExtra}
                   onChange={(e) => setProgExtra(e.target.value)}
                   rows={2}
-                  className="w-full border rounded-xl px-4 py-3 text-sm"
+                  disabled={!!req.my_bid?.contractor_progress_locked_at}
+                  className="w-full border rounded-xl px-4 py-3 text-sm disabled:bg-slate-100 disabled:text-slate-500"
                 />
                 <button
                   type="button"
                   onClick={saveFinalQuote}
-                  disabled={savingProgress}
+                  disabled={savingProgress || !!req.my_bid?.contractor_progress_locked_at}
                   className="w-full py-4 rounded-2xl bg-slate-900 text-white font-black disabled:bg-slate-400"
                 >
                   {savingProgress ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : "최종 정보 저장"}

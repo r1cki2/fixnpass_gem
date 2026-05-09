@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, Fragment } from "react";
 import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 
@@ -25,12 +25,18 @@ type MailingRow = {
   notification_id: number;
   event_type: string;
   event_label: string;
-  event_trigger: string;
+  event_trigger_catalog?: string;
   recipient_type: string;
   recipient_name: string;
   user_id: string;
   status: string;
   created_at: string;
+  event_group_id?: string;
+  is_admin_copy?: boolean;
+  event_actor_label?: string;
+  trigger_user_id?: string | null;
+  trigger_name?: string | null;
+  trigger_role_kr?: string | null;
   mail_meta: {
     channel?: string;
     immediate_attempted?: boolean;
@@ -47,6 +53,40 @@ type MailingRow = {
     last_attempt_at?: string;
     last_attempt_success?: boolean;
   };
+};
+type MailingGroup = {
+  event_group_id: string;
+  created_at: string;
+  event_type_labels: { event_type: string; label: string }[];
+  event_actor_label: string;
+  trigger_user_id?: string | null;
+  trigger_name?: string | null;
+  trigger_role_kr?: string | null;
+  recipient_count: number;
+  status_counts: Record<string, number>;
+  members: MailingRow[];
+};
+type MatchProgressRow = {
+  repair_request_id: number;
+  status: string;
+  building_name?: string;
+  region_summary?: string;
+  requester_name?: string;
+  contact_unlocked_at?: string;
+  bids: Array<{
+    bid_id: number;
+    partner_company_name?: string;
+    bid_amount?: number;
+    site_visit_date?: string;
+    final_bid_amount?: number | null;
+    requester_site_visit_date?: string;
+    requester_final_bid_amount?: number | null;
+    requester_variance_note?: string | null;
+    requester_visit_review?: string | null;
+    contractor_progress_locked_at?: string | null;
+    requester_progress_locked_at?: string | null;
+    variance_reason?: string | null;
+  }>;
 };
 type AdminMailRecipient = {
   user_id: string;
@@ -76,17 +116,20 @@ export default function AdminPage() {
   const [approvalFilter, setApprovalFilter] = useState<"all" | "pending" | "active">("all");
   const [userSearch, setUserSearch] = useState("");
   const [actionLogs, setActionLogs] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<"requests" | "inquiries" | "mail" | "ops" | "stats">("requests");
+  const [activeTab, setActiveTab] = useState<
+    "requests" | "inquiries" | "mail" | "post_match" | "ops" | "stats"
+  >("requests");
   const [adminRequests, setAdminRequests] = useState<any[]>([]);
   const [reqStatusFilter, setReqStatusFilter] = useState("ALL");
   const [reqSearch, setReqSearch] = useState("");
   const [grantUserId, setGrantUserId] = useState("");
   const [isMasterAdmin, setIsMasterAdmin] = useState(false);
-  const [allowedTabs, setAllowedTabs] = useState<Array<"requests" | "inquiries" | "mail" | "ops" | "stats">>([
-    "requests",
-    "inquiries",
-  ]);
-  const [mailings, setMailings] = useState<MailingRow[]>([]);
+  const [allowedTabs, setAllowedTabs] = useState<
+    Array<"requests" | "inquiries" | "mail" | "post_match" | "ops" | "stats">
+  >(["requests", "inquiries"]);
+  const [mailGroups, setMailGroups] = useState<MailingGroup[]>([]);
+  const [expandedMailGroupId, setExpandedMailGroupId] = useState<string | null>(null);
+  const [matchProgress, setMatchProgress] = useState<MatchProgressRow[]>([]);
   const [mailCatalog, setMailCatalog] = useState<MailCatalogItem[]>([]);
   const [mailRecipients, setMailRecipients] = useState<AdminMailRecipient[]>([]);
   const [mailStatusFilter, setMailStatusFilter] = useState("ALL");
@@ -105,7 +148,7 @@ export default function AdminPage() {
   };
 
   const fetchAll = async (t: string) => {
-    const [oRes, aRes, sRes, tRes, pRes, iRes, lRes, rRes, mRes, mrRes] = await Promise.all([
+    const [oRes, aRes, sRes, tRes, pRes, iRes, lRes, rRes, mRes, mrRes, mpRes] = await Promise.all([
       fetch(`${baseUrl}/api/admin/overview`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/auth-users`, { headers: authHeader(t) }),
       fetch(`${baseUrl}/api/admin/settings/contractor-approval`, { headers: authHeader(t) }),
@@ -119,6 +162,7 @@ export default function AdminPage() {
         { headers: authHeader(t) },
       ),
       fetch(`${baseUrl}/api/admin/mail-recipients`, { headers: authHeader(t) }),
+      fetch(`${baseUrl}/api/admin/match-progress?limit=200`, { headers: authHeader(t) }),
     ]);
     if ([oRes, aRes].some((r) => r.status === 401 || r.status === 403)) {
       alert("관리자 권한이 없습니다.");
@@ -138,10 +182,11 @@ export default function AdminPage() {
     if (rRes.ok) setAdminRequests((await rRes.json()).data || []);
     if (mRes.ok) {
       const mJson = await mRes.json();
-      setMailings(mJson?.data?.rows || []);
+      setMailGroups(mJson?.data?.groups || []);
       setMailCatalog(mJson?.data?.catalog || []);
     }
     if (mrRes.ok) setMailRecipients((await mrRes.json()).data || []);
+    if (mpRes.ok) setMatchProgress((await mpRes.json()).data || []);
     setOverview(oJson.data);
     setAuthUsers(aJson.data || []);
     setTrends(tJson.data || { daily: [], weekly: [], monthly: [] });
@@ -157,7 +202,7 @@ export default function AdminPage() {
       if (!sRes.ok) return router.replace("/");
       const sJson = await sRes.json();
       const tabs = (sJson?.data?.allowed_tabs || ["requests", "inquiries"]) as Array<
-        "requests" | "inquiries" | "mail" | "ops" | "stats"
+        "requests" | "inquiries" | "mail" | "post_match" | "ops" | "stats"
       >;
       setAllowedTabs(tabs);
       setIsMasterAdmin(Boolean(sJson?.data?.is_master));
@@ -337,6 +382,14 @@ export default function AdminPage() {
         {allowedTabs.includes("requests") && <button onClick={() => setActiveTab("requests")} className={`px-3 py-1 rounded ${activeTab === "requests" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>회원 및 견적 관리</button>}
         {allowedTabs.includes("inquiries") && <button onClick={() => setActiveTab("inquiries")} className={`px-3 py-1 rounded ${activeTab === "inquiries" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>고객 문의 관리</button>}
         {allowedTabs.includes("mail") && <button onClick={() => setActiveTab("mail")} className={`px-3 py-1 rounded ${activeTab === "mail" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>메일링 관리</button>}
+        {allowedTabs.includes("post_match") && (
+          <button
+            onClick={() => setActiveTab("post_match")}
+            className={`px-3 py-1 rounded ${activeTab === "post_match" ? "bg-slate-900 text-white" : "bg-slate-100"}`}
+          >
+            선정 후 진행
+          </button>
+        )}
         {allowedTabs.includes("ops") && <button onClick={() => setActiveTab("ops")} className={`px-3 py-1 rounded ${activeTab === "ops" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>승인/팝업/운영</button>}
         {allowedTabs.includes("stats") && <button onClick={() => setActiveTab("stats")} className={`px-3 py-1 rounded ${activeTab === "stats" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>서비스 사용 현황</button>}
       </div>
@@ -402,47 +455,180 @@ export default function AdminPage() {
           </div>
         </div>}
 
-        <div className="overflow-x-auto max-h-[560px] overflow-y-auto">
-          <table className="w-full text-xs min-w-[1450px]">
-            <thead><tr className="border-b bg-slate-50">
-              <th className="py-2 px-2">ID</th><th className="py-2 px-2">이벤트</th><th className="py-2 px-2">발생일시</th><th className="py-2 px-2">즉시발송</th>
-              <th className="py-2 px-2">즉시결과/오류</th><th className="py-2 px-2">크론시도</th><th className="py-2 px-2">크론성공여부</th>
-              <th className="py-2 px-2">최종상태</th><th className="py-2 px-2">수신자</th><th className="py-2 px-2">채널</th>
-            </tr></thead>
+        <p className="text-sm text-slate-600">
+          같은 이벤트 그룹(<code className="text-xs bg-slate-100 px-1 rounded">event_group_id</code>)으로 묶어 요약합니다.
+          수신자·발송 상세는 행을 펼쳐 확인하세요. <span className="font-semibold">이벤트 수행자</span>는 해당 알림을 유발한 회원입니다.
+        </p>
+        <div className="overflow-x-auto max-h-[560px] overflow-y-auto border rounded-xl">
+          <table className="w-full text-xs min-w-[800px]">
+            <thead>
+              <tr className="border-b bg-slate-50">
+                <th className="py-2 px-2 w-8"></th>
+                <th className="py-2 px-2">발생일시</th>
+                <th className="py-2 px-2">이벤트 수행자</th>
+                <th className="py-2 px-2">이벤트 종류</th>
+                <th className="py-2 px-2">수신 요약</th>
+                <th className="py-2 px-2">상태 요약</th>
+              </tr>
+            </thead>
             <tbody>
-              {mailings.map((m) => (
-                <tr key={m.notification_id} className="border-b align-top">
-                  <td className="py-2 px-2 font-mono">{m.notification_id}</td>
-                  <td className="py-2 px-2">
-                    <div className="font-semibold">{m.event_label}</div>
-                    <div className="text-slate-500">{m.event_type}</div>
-                  </td>
-                  <td className="py-2 px-2">{m.created_at ? new Date(m.created_at).toLocaleString("ko-KR") : "-"}</td>
-                  <td className="py-2 px-2">{m.mail_meta?.immediate_attempted ? "Y" : "N"}{m.mail_meta?.immediate_attempted_at ? ` (${new Date(m.mail_meta.immediate_attempted_at).toLocaleString("ko-KR")})` : ""}</td>
-                  <td className="py-2 px-2">
-                    {m.mail_meta?.immediate_sent ? "성공" : "실패/대기"}
-                    {m.mail_meta?.immediate_error && <div className="text-rose-600 break-all">{m.mail_meta.immediate_error}</div>}
-                  </td>
-                  <td className="py-2 px-2">
-                    {m.mail_meta?.cron_attempt_count || 0}회
-                    {m.mail_meta?.cron_attempted_at && <div>{new Date(m.mail_meta.cron_attempted_at).toLocaleString("ko-KR")}</div>}
-                  </td>
-                  <td className="py-2 px-2">
-                    {m.mail_meta?.cron_sent ? "성공" : (m.mail_meta?.cron_attempt_count ? "실패" : "-")}
-                    {m.mail_meta?.cron_error && <div className="text-rose-600 break-all">{m.mail_meta.cron_error}</div>}
-                  </td>
-                  <td className="py-2 px-2 font-semibold">{m.status}</td>
-                  <td className="py-2 px-2">
-                    {m.recipient_name || "-"}
-                    <div className="text-slate-500">{m.user_id}</div>
-                  </td>
-                  <td className="py-2 px-2">{m.mail_meta?.channel || "-"}</td>
-                </tr>
+              {mailGroups.map((g) => (
+                <Fragment key={g.event_group_id}>
+                  <tr className="border-b align-top bg-white hover:bg-slate-50/80">
+                    <td className="py-2 px-2">
+                      <button
+                        type="button"
+                        className="text-indigo-600 font-bold"
+                        onClick={() =>
+                          setExpandedMailGroupId((cur) => (cur === g.event_group_id ? null : g.event_group_id))
+                        }
+                        aria-expanded={expandedMailGroupId === g.event_group_id}
+                      >
+                        {expandedMailGroupId === g.event_group_id ? "▼" : "▶"}
+                      </button>
+                    </td>
+                    <td className="py-2 px-2 whitespace-nowrap">
+                      {g.created_at ? new Date(g.created_at).toLocaleString("ko-KR") : "-"}
+                    </td>
+                    <td className="py-2 px-2">
+                      <div className="font-semibold text-slate-900">{g.event_actor_label || "-"}</div>
+                      {g.trigger_user_id && (
+                        <div className="text-slate-500 font-mono text-[10px] break-all">{g.trigger_user_id}</div>
+                      )}
+                    </td>
+                    <td className="py-2 px-2">
+                      {(g.event_type_labels || []).map((x) => (
+                        <div key={x.event_type}>
+                          <span className="font-medium">{x.label}</span>
+                          <span className="text-slate-400 ml-1">({x.event_type})</span>
+                        </div>
+                      ))}
+                    </td>
+                    <td className="py-2 px-2">
+                      수신 건수 <span className="font-bold">{g.recipient_count}</span>
+                    </td>
+                    <td className="py-2 px-2">
+                      {Object.entries(g.status_counts || {})
+                        .map(([k, v]) => `${k}:${v}`)
+                        .join(" · ") || "-"}
+                    </td>
+                  </tr>
+                  {expandedMailGroupId === g.event_group_id && (
+                    <tr key={`${g.event_group_id}-detail`} className="border-b bg-slate-50">
+                      <td colSpan={6} className="p-0">
+                        <div className="overflow-x-auto p-3">
+                          <table className="w-full text-[11px] min-w-[1200px]">
+                            <thead>
+                              <tr className="border-b text-slate-600">
+                                <th className="py-1 px-2 text-left">ID</th>
+                                <th className="py-1 px-2 text-left">이벤트</th>
+                                <th className="py-1 px-2 text-left">관리자참조</th>
+                                <th className="py-1 px-2 text-left">수신자</th>
+                                <th className="py-1 px-2 text-left">상태</th>
+                                <th className="py-1 px-2 text-left">즉시발송</th>
+                                <th className="py-1 px-2 text-left">채널</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(g.members || []).map((m) => (
+                                <tr key={m.notification_id} className="border-b border-slate-200/80 align-top">
+                                  <td className="py-1 px-2 font-mono">{m.notification_id}</td>
+                                  <td className="py-1 px-2">
+                                    <div className="font-semibold">{m.event_label}</div>
+                                    <div className="text-slate-500">{m.event_type}</div>
+                                  </td>
+                                  <td className="py-1 px-2">{m.is_admin_copy ? "예" : "아니오"}</td>
+                                  <td className="py-1 px-2">
+                                    {m.recipient_name || "-"}
+                                    <div className="text-slate-500 break-all">{m.user_id}</div>
+                                  </td>
+                                  <td className="py-1 px-2 font-semibold">{m.status}</td>
+                                  <td className="py-1 px-2">
+                                    {m.mail_meta?.immediate_sent ? "성공" : m.mail_meta?.immediate_attempted ? "시도" : "-"}
+                                    {m.mail_meta?.immediate_error && (
+                                      <div className="text-rose-600 break-all">{m.mail_meta.immediate_error}</div>
+                                    )}
+                                  </td>
+                                  <td className="py-1 px-2">{m.mail_meta?.channel || "-"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>
         </div>
       </section>}
+
+      {activeTab === "post_match" && (
+        <section className="bg-white border rounded-2xl p-5 space-y-4">
+          <h2 className="text-xl font-bold">선정 후 진행 (내방 · 최종견적 · 의뢰인 확인)</h2>
+          <p className="text-sm text-slate-600">
+            업체 선정(<code className="text-xs bg-slate-100 px-1">matched</code> 이상) 건의 내방일·최종견적·후기 제출 여부를 확인합니다.
+          </p>
+          {matchProgress.length === 0 ? (
+            <p className="text-sm text-slate-500 py-8 text-center border rounded-xl">해당 건이 없습니다.</p>
+          ) : (
+            <div className="overflow-x-auto max-h-[640px] overflow-y-auto border rounded-xl">
+              <table className="w-full text-xs min-w-[960px]">
+                <thead>
+                  <tr className="border-b bg-slate-50">
+                    <th className="py-2 px-2 text-left">요청 ID</th>
+                    <th className="py-2 px-2 text-left">상태</th>
+                    <th className="py-2 px-2 text-left">의뢰인</th>
+                    <th className="py-2 px-2 text-left">현장</th>
+                    <th className="py-2 px-2 text-left">선정 업체 / 진행</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {matchProgress.map((row) => (
+                    <tr key={row.repair_request_id} className="border-b align-top">
+                      <td className="py-2 px-2 font-mono">{row.repair_request_id}</td>
+                      <td className="py-2 px-2">{row.status}</td>
+                      <td className="py-2 px-2">{row.requester_name || "-"}</td>
+                      <td className="py-2 px-2">
+                        <div className="font-semibold">{row.building_name || "-"}</div>
+                        <div className="text-slate-500">{row.region_summary || ""}</div>
+                      </td>
+                      <td className="py-2 px-2 space-y-2">
+                        {(row.bids || []).map((b) => (
+                          <div key={b.bid_id} className="rounded-lg border border-slate-200 bg-slate-50/80 p-2 space-y-1">
+                            <div className="font-bold text-slate-900">{b.partner_company_name || `bid ${b.bid_id}`}</div>
+                            <div className="text-[11px] text-slate-700">
+                              최초견적: {b.bid_amount != null ? `${Number(b.bid_amount).toLocaleString()}원` : "-"}
+                            </div>
+                            <div className="text-[11px]">
+                              업체 내방: {b.site_visit_date ? String(b.site_visit_date).slice(0, 10) : "—"} · 최종액:{" "}
+                              {b.final_bid_amount != null ? `${Number(b.final_bid_amount).toLocaleString()}원` : "—"}{" "}
+                              {b.contractor_progress_locked_at ? "(업체 제출완료)" : ""}
+                            </div>
+                            <div className="text-[11px]">
+                              의뢰인 내방: {b.requester_site_visit_date ? String(b.requester_site_visit_date).slice(0, 10) : "—"}{" "}
+                              · 확인 최종액:{" "}
+                              {b.requester_final_bid_amount != null
+                                ? `${Number(b.requester_final_bid_amount).toLocaleString()}원`
+                                : "—"}{" "}
+                              {b.requester_progress_locked_at ? "(의뢰인 제출완료)" : ""}
+                            </div>
+                            {b.requester_visit_review ? (
+                              <div className="text-[11px] text-slate-600">후기: {b.requester_visit_review}</div>
+                            ) : null}
+                          </div>
+                        ))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
 
       {activeTab === "ops" && isMasterAdmin && <section className="bg-white border rounded-2xl p-5 space-y-3">
         <h2 className="text-xl font-bold">회원가입 승인 설정</h2>

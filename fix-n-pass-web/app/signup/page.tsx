@@ -106,7 +106,7 @@ export default function SignupPage() {
       return;
     }
     if (role === "requester" && !requesterAddress.trim()) {
-      setMessage("수리 의뢰인용 건물 소재지를 입력해주세요.");
+      setMessage("기계식주차장(수리대상물) 소재지 주소를 입력해주세요.");
       setIsLoading(false);
       return;
     }
@@ -116,7 +116,7 @@ export default function SignupPage() {
       return;
     }
     if (role === "contractor" && (!companyName.trim() || !region.trim())) {
-      setMessage("수리 업체는 상호와 소재지를 필수로 입력해주세요.");
+      setMessage("수리 업체는 상호와 등록된 주소를 필수로 입력해주세요.");
       setIsLoading(false);
       return;
     }
@@ -301,7 +301,13 @@ export default function SignupPage() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">소재지 <span className="text-rose-600">(필수)</span></label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            {role === "contractor" ? (
+              <>수리 업체 등록된 주소 <span className="text-rose-600">(필수)</span></>
+            ) : (
+              <>기계식주차장(수리대상물) 소재지 주소 <span className="text-rose-600">(필수)</span></>
+            )}
+          </label>
           <AddressSearchInput value={role === "contractor" ? region : requesterAddress} onChange={(v) => {
             if (role === "contractor") {
               setRegion(v);

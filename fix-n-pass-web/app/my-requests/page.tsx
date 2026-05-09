@@ -87,13 +87,13 @@ export default function MyRequestsPage() {
               return (
                 <div key={pk} className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 hover:shadow-md transition-all group">
                   <div className="flex justify-between items-center mb-4">
-                    <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-black tracking-wide uppercase
+                    <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-black tracking-wide
                       ${req.status === 'requested' ? 'bg-blue-100 text-blue-700' : 
-                        req.status === 'draft' ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
+                        req.status === 'draft' ? 'bg-amber-100 text-amber-700' : 
+                        req.status === 'matched' ? 'bg-emerald-100 text-emerald-800' : 'bg-indigo-100 text-indigo-800'}`}>
                       {req.status === 'draft' && <AlertTriangle className="w-3 h-3" />}
                       <Clock className="w-3 h-3" />
-                      {req.status === 'requested' ? '견적 대기 중' : 
-                       req.status === 'draft' ? '견적 요청 비정상' : req.status}
+                      {req.status_label_kr || req.status}
                     </div>
                     <span className="text-sm font-medium text-slate-400">
                       {new Date(req.created_at).toLocaleDateString('ko-KR')}

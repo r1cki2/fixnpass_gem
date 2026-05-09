@@ -181,8 +181,16 @@ export default function RequestDetailPage() {
               <h1 className="text-3xl font-black text-slate-900 mb-2">{reqData.building_name}</h1>
               <p className="text-slate-500 font-medium text-lg">{reqData.region_summary}</p>
             </div>
-            <div className={`px-4 py-2 rounded-2xl text-sm font-black ${reqData.status === 'matched' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
-              {reqData.status === 'matched' ? '매칭 완료' : '견적 수신 중'}
+            <div
+              className={`px-4 py-2 rounded-2xl text-sm font-black max-w-[min(100%,24rem)] text-right leading-snug ${
+                reqData.status === "matched"
+                  ? "bg-emerald-100 text-emerald-800"
+                  : reqData.status === "bidding"
+                    ? "bg-indigo-100 text-indigo-800"
+                    : "bg-blue-100 text-blue-700"
+              }`}
+            >
+              {reqData.status_label_kr || reqData.status}
             </div>
           </div>
 
@@ -230,26 +238,50 @@ export default function RequestDetailPage() {
             )}
           </div>
           {(reqData.status === "requested" || reqData.status === "bidding" || reqData.status === "draft") && (
-            <div className="mt-6">
+            <div className="mt-6 space-y-2">
               <button
                 onClick={handleCancelRequest}
-                className="px-4 py-2 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 font-semibold text-sm"
+                disabled={
+                  reqData.status !== "draft" &&
+                  (reqData.bid_count ?? 0) > 0
+                }
+                className={`px-4 py-2 rounded-lg border font-semibold text-sm ${
+                  reqData.status !== "draft" && (reqData.bid_count ?? 0) > 0
+                    ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
+                    : "bg-rose-50 text-rose-700 border-rose-200"
+                }`}
               >
                 {reqData.status === "draft" ? "요청 내역 삭제" : "견적 요청 취소"}
               </button>
+              {reqData.status !== "draft" && (reqData.bid_count ?? 0) > 0 ? (
+                <p className="text-xs text-slate-500">
+                  한 건이라도 견적이 제출된 요청은 취소할 수 없습니다.
+                </p>
+              ) : null}
             </div>
           )}
         </div>
 
-        {/* 베타 테스트 알림 */}
-        <div className="bg-blue-600 text-white p-6 rounded-[2rem] mb-10 flex items-center justify-between shadow-xl shadow-blue-100">
+        {/* 안내 */}
+        <div className="bg-blue-600 text-white p-6 rounded-[2rem] mb-10 shadow-xl shadow-blue-100">
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-blue-500 rounded-2xl flex items-center justify-center">
+            <div className="w-12 h-12 bg-blue-500 rounded-2xl flex items-center justify-center shrink-0">
               <AlertCircle className="w-6 h-6" />
             </div>
             <div>
-              <p className="font-black text-lg text-white">베타 서비스 기간 무료!</p>
-              <p className="text-blue-100 text-sm font-medium">지금은 중개수수료 없이 바로 파트너 연락처가 공개됩니다.</p>
+              {reqData.status === "matched" ? (
+                <>
+                  <p className="font-black text-lg text-white">업체 선정 이후 안내</p>
+                  <p className="text-blue-100 text-sm font-medium mt-1 leading-relaxed">
+                    수리업체와 연락하시어 내방 일정을 잡으시고, 내방 및 검토 후 최종견적액과 후기를 저희에게도 알려주세요.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="font-black text-lg text-white">베타 서비스 기간 무료!</p>
+                  <p className="text-blue-100 text-sm font-medium">지금은 중개수수료 없이 바로 파트너 연락처가 공개됩니다.</p>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -325,9 +357,15 @@ export default function RequestDetailPage() {
                     )}
                     <div className="rounded-2xl border border-blue-200 bg-blue-50/50 p-5 space-y-3">
                       <p className="font-black text-slate-900 text-sm">내 확인 사항 (선정 업체)</p>
+                      {bid.requester_progress_locked_at ? (
+                        <p className="text-xs font-semibold text-slate-600 bg-white/80 border border-slate-200 rounded-lg px-3 py-2">
+                          제출이 완료되어 이 항목은 더 이상 수정할 수 없습니다.
+                        </p>
+                      ) : null}
                       <label className="block text-xs font-bold text-slate-600">현장 내방 일자 (필수)</label>
                       <input
                         type="date"
+                        min={reqData.min_site_visit_date || undefined}
                         value={requesterFields[bid.bid_id]?.visit ?? ""}
                         onChange={(e) =>
                           setRequesterFields((prev) => {
@@ -335,8 +373,12 @@ export default function RequestDetailPage() {
                             return { ...prev, [bid.bid_id]: { ...cur, visit: e.target.value } };
                           })
                         }
-                        className="w-full border rounded-xl px-3 py-2 text-sm font-semibold"
+                        disabled={!!bid.requester_progress_locked_at}
+                        className="w-full border rounded-xl px-3 py-2 text-sm font-semibold disabled:bg-slate-100 disabled:text-slate-500"
                       />
+                      {reqData.min_site_visit_date ? (
+                        <p className="text-[11px] text-slate-500">내방 일자는 업체 선정일({reqData.min_site_visit_date}) 이후만 선택할 수 있습니다.</p>
+                      ) : null}
                       <label className="block text-xs font-bold text-slate-600">최종견적액 (필수)</label>
                       <input
                         type="text"
@@ -348,7 +390,8 @@ export default function RequestDetailPage() {
                             return { ...prev, [bid.bid_id]: { ...cur, amount: formatWon(e.target.value) } };
                           })
                         }
-                        className="w-full border rounded-xl px-3 py-2 text-base font-black"
+                        disabled={!!bid.requester_progress_locked_at}
+                        className="w-full border rounded-xl px-3 py-2 text-base font-black disabled:bg-slate-100 disabled:text-slate-500"
                       />
                       <label className="block text-xs font-bold text-slate-600">변동 사유 메모 (선택)</label>
                       <textarea
@@ -360,7 +403,8 @@ export default function RequestDetailPage() {
                             return { ...prev, [bid.bid_id]: { ...cur, variance: e.target.value } };
                           })
                         }
-                        className="w-full border rounded-xl px-3 py-2 text-sm"
+                        disabled={!!bid.requester_progress_locked_at}
+                        className="w-full border rounded-xl px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-500"
                       />
                       <label className="block text-xs font-bold text-slate-600">업체 현장 내방 후기 (선택)</label>
                       <textarea
@@ -372,12 +416,13 @@ export default function RequestDetailPage() {
                             return { ...prev, [bid.bid_id]: { ...cur, review: e.target.value } };
                           })
                         }
-                        className="w-full border rounded-xl px-3 py-2 text-sm"
+                        disabled={!!bid.requester_progress_locked_at}
+                        className="w-full border rounded-xl px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-500"
                       />
                       <button
                         type="button"
                         onClick={() => saveRequesterFields(bid.bid_id)}
-                        disabled={savingBidId === bid.bid_id}
+                        disabled={savingBidId === bid.bid_id || !!bid.requester_progress_locked_at}
                         className="w-full py-3 rounded-xl bg-blue-600 text-white font-black disabled:bg-slate-400"
                       >
                         {savingBidId === bid.bid_id ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : "내 확인 정보 저장"}

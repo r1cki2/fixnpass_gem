@@ -6,14 +6,16 @@
 
 ## 1. 시스템 구성
 
-| 구분 | 스택 · 위치 |
-|------|----------------|
-| 프론트엔드 | Next.js (App Router), `fix-n-pass-web/` |
-| 백엔드 API | FastAPI 단일 앱 `main.py` (루트) |
-| 인증 | Supabase Auth (클라이언트: `@supabase/supabase-js`, 세션은 `sessionStorage` 커스텀 어댑터) |
-| DB · Storage | Supabase (PostgreSQL, Storage 버킷: 원본·마스킹 PDF 등 — 코드 내 버킷명 참조) |
-| AI 분석 | Google Gemini (`GEMINI_API_KEY`) |
-| 메일 | SMTP 환경변수 (`MAIL_SMTP_*`), 알림 큐 `notification_queue` + 선택적 즉시 발송 |
+
+| 구분           | 스택 · 위치                                                                      |
+| ------------ | ---------------------------------------------------------------------------- |
+| 프론트엔드        | Next.js (App Router), `fix-n-pass-web/`                                      |
+| 백엔드 API      | FastAPI 단일 앱 `main.py` (루트)                                                  |
+| 인증           | Supabase Auth (클라이언트: `@supabase/supabase-js`, 세션은 `sessionStorage` 커스텀 어댑터) |
+| DB · Storage | Supabase (PostgreSQL, Storage 버킷: 원본·마스킹 PDF 등 — 코드 내 버킷명 참조)                |
+| AI 분석        | Google Gemini (`GEMINI_API_KEY`)                                             |
+| 메일           | SMTP 환경변수 (`MAIL_SMTP_*`), 알림 큐 `notification_queue` + 선택적 즉시 발송             |
+
 
 환경변수는 프론트 `NEXT_PUBLIC_*`, 서버 `SUPABASE_*`, `GEMINI_*`, SMTP 등 분리되어 있습니다.
 
@@ -23,22 +25,24 @@
 
 공통: 루트 `layout.tsx` — 상단 고정 헤더(로고, 내 요청 내역, 마이페이지, 수리 마켓, 고객 문의), `AuthNav`, `SiteAnnouncementModal`.
 
-| 경로 | 대상 | 요약 |
-|------|------|------|
-| `/` | 의뢰인·비회원 | PDF 업로드 → Gemini 분석 → 부적합/권고 항목 선택 → 견적 요청(`update-request`). 비회원 시 `localStorage`에 pending 저장 후 로그인 유도 |
-| `/login` | 전체 | 로그인. `next` 쿼리 지원. 로그인 후 `submitPendingQuoteRequest` 성공 시 `/my-requests`로 이동 |
-| `/signup` | 전체 | 회원가입 → 프로필 API. 의뢰인 완료 후 pending 있으면 `/my-requests` |
-| `/onboarding` | 신규 | 역할·프로필 미완료 시 유도 |
-| `/my-requests` | 의뢰인 | 요청 목록, pending 견적 자동 제출 시도 |
-| `/my-requests/[id]` | 의뢰인 | 상세: 선택 항목(부적합/권고 구분), 견적 카드, 체크박스 최대 2개 선정 → 매칭, 선정 업체 정보·의뢰인 확인 필드 |
-| `/my-page` | 로그인 사용자 | 마이페이지 |
-| `/contractor/market` | 수리업체 | 마켓 목록. 비활성/미승인 시 목록 대신 안내 카드 |
-| `/contractor/market/[id]` | 수리업체 | 상세: 현장 정보, 수리 항목, 마스킹 PDF, 견적 입력·수정. **매칭·선정 후** 의뢰인 연락처·주소 노출 + 최종 견적·내방 정보 제출 |
-| `/partner/[id]` | 의뢰인 등 | 업체 공개 프로필. `?request_id=` + Bearer 시 매칭 전 마스킹 규칙 적용 |
-| `/inquiry` | 전체 | 문의 목록 |
-| `/inquiry/new` | 로그인 | 문의 작성 |
-| `/inquiry/[id]` | 전체 | 문의 상세 |
-| `/admin` | 관리자 | 사용자·요청·설정·팝업·문의 등 운영 |
+
+| 경로                        | 대상      | 요약                                                                                                      |
+| ------------------------- | ------- | ------------------------------------------------------------------------------------------------------- |
+| `/`                       | 의뢰인·비회원 | PDF 업로드 → Gemini 분석 → 부적합/권고 항목 선택 → 견적 요청(`update-request`). 비회원 시 `localStorage`에 pending 저장 후 로그인 유도 |
+| `/login`                  | 전체      | 로그인. `next` 쿼리 지원. 로그인 후 `submitPendingQuoteRequest` 성공 시 `/my-requests`로 이동                            |
+| `/signup`                 | 전체      | 회원가입 → 프로필 API. 의뢰인 완료 후 pending 있으면 `/my-requests`                                                     |
+| `/onboarding`             | 신규      | 역할·프로필 미완료 시 유도                                                                                         |
+| `/my-requests`            | 의뢰인     | 요청 목록, pending 견적 자동 제출 시도                                                                              |
+| `/my-requests/[id]`       | 의뢰인     | 상세: 선택 항목(부적합/권고 구분), 견적 카드, 체크박스 최대 2개 선정 → 매칭, 선정 업체 정보·의뢰인 확인 필드                                     |
+| `/my-page`                | 로그인 사용자 | 마이페이지                                                                                                   |
+| `/contractor/market`      | 수리업체    | 마켓 목록. 비활성/미승인 시 목록 대신 안내 카드                                                                            |
+| `/contractor/market/[id]` | 수리업체    | 상세: 현장 정보, 수리 항목, 마스킹 PDF, 견적 입력·수정. **매칭·선정 후** 의뢰인 연락처·주소 노출 + 최종 견적·내방 정보 제출                         |
+| `/partner/[id]`           | 의뢰인 등   | 업체 공개 프로필. `?request_id=` + Bearer 시 매칭 전 마스킹 규칙 적용                                                     |
+| `/inquiry`                | 전체      | 문의 목록                                                                                                   |
+| `/inquiry/new`            | 로그인     | 문의 작성                                                                                                   |
+| `/inquiry/[id]`           | 전체      | 문의 상세                                                                                                   |
+| `/admin`                  | 관리자     | 사용자·요청·설정·팝업·문의 등 운영                                                                                    |
+
 
 역할별 클라이언트 분기: 여러 페이지에서 `profiles.role`으로 업체·의뢰인 접근 차단 또는 리다이렉트.
 
@@ -94,40 +98,48 @@
 
 ### 핵심 비즈니스
 
-| 메서드 | 경로 | 설명 |
-|--------|------|------|
-| POST | `/api/upload-pdf` | PDF 업로드, Gemini 분석, Storage 저장, `repair_requests` 생성(보통 `draft`) |
-| POST | `/api/update-request` | 의뢰인 연결·항목·`requested` 등 갱신, 알림 큐 |
-| POST | `/api/pending-quote/discard-draft` | 업체가 게스트 draft 정리 등 |
-| POST | `/api/contractor/bid` | 견적 등록·수정 |
-| POST | `/api/match-partners` | 선정 bid 최대 2개 → `matched` |
-| POST | `/api/contractor/bids/final-quote` | 업체 최종 견적·내방 정보 |
-| POST | `/api/my-requests/{rid}/bids/{bid_id}/requester-fields` | 의뢰인 확인 입력 |
+
+| 메서드  | 경로                                                      | 설명                                                               |
+| ---- | ------------------------------------------------------- | ---------------------------------------------------------------- |
+| POST | `/api/upload-pdf`                                       | PDF 업로드, Gemini 분석, Storage 저장, `repair_requests` 생성(보통 `draft`) |
+| POST | `/api/update-request`                                   | 의뢰인 연결·항목·`requested` 등 갱신, 알림 큐                                 |
+| POST | `/api/pending-quote/discard-draft`                      | 업체가 게스트 draft 정리 등                                               |
+| POST | `/api/contractor/bid`                                   | 견적 등록·수정                                                         |
+| POST | `/api/match-partners`                                   | 선정 bid 최대 2개 → `matched`                                         |
+| POST | `/api/contractor/bids/final-quote`                      | 업체 최종 견적·내방 정보                                                   |
+| POST | `/api/my-requests/{rid}/bids/{bid_id}/requester-fields` | 의뢰인 확인 입력                                                        |
+
 
 ### 의뢰인 · 업체 정보
 
-| 메서드 | 경로 |
-|--------|------|
-| GET | `/api/my-requests`, `/api/my-requests/{id}`, `/api/my-requests/{id}/bids` |
-| POST | `/api/my-requests/{id}/cancel` |
-| GET | `/api/contractor/market`, `/api/contractor/market/{id}` |
-| GET | `/api/requests/{id}/pdf` |
-| GET | `/api/partner/{partner_id}` |
+
+| 메서드  | 경로                                                                        |
+| ---- | ------------------------------------------------------------------------- |
+| GET  | `/api/my-requests`, `/api/my-requests/{id}`, `/api/my-requests/{id}/bids` |
+| POST | `/api/my-requests/{id}/cancel`                                            |
+| GET  | `/api/contractor/market`, `/api/contractor/market/{id}`                   |
+| GET  | `/api/requests/{id}/pdf`                                                  |
+| GET  | `/api/partner/{partner_id}`                                               |
+
 
 ### 프로필 · 설정
 
-| 메서드 | 경로 |
-|--------|------|
-| GET/POST | `/api/me/profile` |
-| GET | `/api/signup-config`, `/api/regions/recommend`, `/api/regions/open-demand` |
+
+| 메서드      | 경로                                                                         |
+| -------- | -------------------------------------------------------------------------- |
+| GET/POST | `/api/me/profile`                                                          |
+| GET      | `/api/signup-config`, `/api/regions/recommend`, `/api/regions/open-demand` |
+
 
 ### 고객 문의
 
-| 메서드 | 경로 |
-|--------|------|
-| GET | `/api/inquiries`, `/api/inquiries/{id}` |
-| POST | `/api/inquiries`, `/api/inquiries/{id}/reply`, `/api/inquiries/{id}/followup` |
-| PATCH | `/api/admin/inquiry-replies/{reply_id}` |
+
+| 메서드   | 경로                                                                            |
+| ----- | ----------------------------------------------------------------------------- |
+| GET   | `/api/inquiries`, `/api/inquiries/{id}`                                       |
+| POST  | `/api/inquiries`, `/api/inquiries/{id}/reply`, `/api/inquiries/{id}/followup` |
+| PATCH | `/api/admin/inquiry-replies/{reply_id}`                                       |
+
 
 ### 관리자 (Bearer + `MASTER_ADMIN_EMAIL` / `admin_roles`)
 
