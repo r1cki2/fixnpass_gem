@@ -2184,29 +2184,33 @@ async def get_bids_for_request(request_id: int, requester_id: str):
             else:
                 pub_name = base_name
                 pub_phone = profile.get("phone_number") or "미등록"
-            processed_bids.append(
-                {
-                    "bid_id": b["bid_id"],
-                    "partner_id": p_id,
-                    "partner_name": pub_name,
-                    "partner_phone": pub_phone,
-                    "bid_amount": b["bid_amount"],
-                    "avg_rating": float(rating_info["avg_rating"]),
-                    "review_count": int(rating_info["review_count"]),
-                    "is_selected": is_selected,
-                    "partner_masked": mask_partner,
-                    "site_visit_date": b.get("site_visit_date"),
-                    "final_bid_amount": b.get("final_bid_amount"),
-                    "variance_reason": b.get("variance_reason"),
-                    "contractor_extra_note": b.get("contractor_extra_note"),
-                    "requester_site_visit_date": b.get("requester_site_visit_date"),
-                    "requester_final_bid_amount": b.get("requester_final_bid_amount"),
-                    "requester_variance_note": b.get("requester_variance_note"),
-                    "requester_visit_review": b.get("requester_visit_review"),
-                    "contractor_progress_locked_at": b.get("contractor_progress_locked_at"),
-                    "requester_progress_locked_at": b.get("requester_progress_locked_at"),
-                }
-            )
+            # 선정 이후 업체의 내방·최종견적·의견은 의뢰인에게 노출하지 않음(관리자 화면에서만 대조).
+            hide_contractor_final = req_status in ("matched", "repairing", "completed") and is_selected
+            row_out = {
+                "bid_id": b["bid_id"],
+                "partner_id": p_id,
+                "partner_name": pub_name,
+                "partner_phone": pub_phone,
+                "bid_amount": b["bid_amount"],
+                "avg_rating": float(rating_info["avg_rating"]),
+                "review_count": int(rating_info["review_count"]),
+                "is_selected": is_selected,
+                "partner_masked": mask_partner,
+                "requester_site_visit_date": b.get("requester_site_visit_date"),
+                "requester_final_bid_amount": b.get("requester_final_bid_amount"),
+                "requester_variance_note": b.get("requester_variance_note"),
+                "requester_visit_review": b.get("requester_visit_review"),
+                "requester_progress_locked_at": b.get("requester_progress_locked_at"),
+            }
+            if hide_contractor_final:
+                row_out["contractor_final_submitted"] = bool(b.get("contractor_progress_locked_at"))
+            else:
+                row_out["site_visit_date"] = b.get("site_visit_date")
+                row_out["final_bid_amount"] = b.get("final_bid_amount")
+                row_out["variance_reason"] = b.get("variance_reason")
+                row_out["contractor_extra_note"] = b.get("contractor_extra_note")
+                row_out["contractor_progress_locked_at"] = b.get("contractor_progress_locked_at")
+            processed_bids.append(row_out)
         return {"status": "success", "data": processed_bids}
     except HTTPException as e:
         raise e
@@ -3386,6 +3390,21 @@ async def admin_deactivate_site_announcement(
     supabase.table("site_announcements").update({"is_active": False}).eq("id", announcement_id).execute()
     _log_admin_action("site_announcement_off", admin["email"], {"id": announcement_id})
     return {"status": "success"}
+
+
+@app.post("/api/admin/site-announcements/deactivate-all")
+async def admin_deactivate_all_site_announcements(authorization: Optional[str] = Header(default=None)):
+    """신규 팝업을 올리지 않고, 현재 활성화된 첫 화면 팝업만 모두 끈다."""
+    admin = _require_admin(authorization)
+    res = (
+        supabase.table("site_announcements")
+        .update({"is_active": False})
+        .eq("is_active", True)
+        .execute()
+    )
+    n = len(res.data) if res.data else 0
+    _log_admin_action("site_announcement_off_all", admin["email"], {"deactivated_rows": n})
+    return {"status": "success", "data": {"deactivated_count": n}}
 
 
 @app.get("/api/admin/overview")

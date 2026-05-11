@@ -79,6 +79,7 @@ type MatchProgressRow = {
     bid_amount?: number;
     site_visit_date?: string;
     final_bid_amount?: number | null;
+    contractor_extra_note?: string | null;
     requester_site_visit_date?: string;
     requester_final_bid_amount?: number | null;
     requester_variance_note?: string | null;
@@ -387,7 +388,7 @@ export default function AdminPage() {
             onClick={() => setActiveTab("post_match")}
             className={`px-3 py-1 rounded ${activeTab === "post_match" ? "bg-slate-900 text-white" : "bg-slate-100"}`}
           >
-            선정 후 진행
+            견적 선택 현황 관리
           </button>
         )}
         {allowedTabs.includes("ops") && <button onClick={() => setActiveTab("ops")} className={`px-3 py-1 rounded ${activeTab === "ops" ? "bg-slate-900 text-white" : "bg-slate-100"}`}>승인/팝업/운영</button>}
@@ -567,22 +568,24 @@ export default function AdminPage() {
 
       {activeTab === "post_match" && (
         <section className="bg-white border rounded-2xl p-5 space-y-4">
-          <h2 className="text-xl font-bold">선정 후 진행 (내방 · 최종견적 · 의뢰인 확인)</h2>
+          <h2 className="text-xl font-bold">견적 선택 현황 관리</h2>
           <p className="text-sm text-slate-600">
-            업체 선정(<code className="text-xs bg-slate-100 px-1">matched</code> 이상) 건의 내방일·최종견적·후기 제출 여부를 확인합니다.
+            업체 선정(<code className="text-xs bg-slate-100 px-1">matched</code> 이상) 건을 요청별로 보여 주며, 선정된 업체(최대 2곳)마다{" "}
+            <span className="font-semibold">수리 업체 제출</span>과 <span className="font-semibold">수리 의뢰인 확인</span>을 나란히
+            대조할 수 있습니다.
           </p>
           {matchProgress.length === 0 ? (
             <p className="text-sm text-slate-500 py-8 text-center border rounded-xl">해당 건이 없습니다.</p>
           ) : (
-            <div className="overflow-x-auto max-h-[640px] overflow-y-auto border rounded-xl">
-              <table className="w-full text-xs min-w-[960px]">
+            <div className="overflow-x-auto max-h-[720px] overflow-y-auto border rounded-xl">
+              <table className="w-full text-xs min-w-[1080px]">
                 <thead>
                   <tr className="border-b bg-slate-50">
-                    <th className="py-2 px-2 text-left">요청 ID</th>
-                    <th className="py-2 px-2 text-left">상태</th>
-                    <th className="py-2 px-2 text-left">의뢰인</th>
-                    <th className="py-2 px-2 text-left">현장</th>
-                    <th className="py-2 px-2 text-left">선정 업체 / 진행</th>
+                    <th className="py-2 px-2 text-left w-[7rem]">요청 ID</th>
+                    <th className="py-2 px-2 text-left w-[5rem]">상태</th>
+                    <th className="py-2 px-2 text-left w-[6rem]">의뢰인</th>
+                    <th className="py-2 px-2 text-left min-w-[9rem]">현장</th>
+                    <th className="py-2 px-2 text-left">선정 업체·제출 현황 (업체 vs 의뢰인)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -595,29 +598,75 @@ export default function AdminPage() {
                         <div className="font-semibold">{row.building_name || "-"}</div>
                         <div className="text-slate-500">{row.region_summary || ""}</div>
                       </td>
-                      <td className="py-2 px-2 space-y-2">
+                      <td className="py-2 px-2 space-y-3">
                         {(row.bids || []).map((b) => (
-                          <div key={b.bid_id} className="rounded-lg border border-slate-200 bg-slate-50/80 p-2 space-y-1">
-                            <div className="font-bold text-slate-900">{b.partner_company_name || `bid ${b.bid_id}`}</div>
-                            <div className="text-[11px] text-slate-700">
-                              최초견적: {b.bid_amount != null ? `${Number(b.bid_amount).toLocaleString()}원` : "-"}
+                          <div key={b.bid_id} className="rounded-xl border-2 border-slate-300 bg-white overflow-hidden">
+                            <div className="px-3 py-2 bg-slate-100 border-b border-slate-200 font-bold text-slate-900 text-sm">
+                              {b.partner_company_name || `견적 #${b.bid_id}`}
+                              <span className="ml-2 text-[11px] font-normal text-slate-600">
+                                최초견적 {b.bid_amount != null ? `${Number(b.bid_amount).toLocaleString()}원` : "—"}
+                              </span>
                             </div>
-                            <div className="text-[11px]">
-                              업체 내방: {b.site_visit_date ? String(b.site_visit_date).slice(0, 10) : "—"} · 최종액:{" "}
-                              {b.final_bid_amount != null ? `${Number(b.final_bid_amount).toLocaleString()}원` : "—"}{" "}
-                              {b.contractor_progress_locked_at ? "(업체 제출완료)" : ""}
+                            <div className="grid sm:grid-cols-2 gap-0 sm:divide-x divide-slate-200">
+                              <div className="p-3 space-y-2 border-b sm:border-b-0 border-slate-100 bg-amber-50/40">
+                                <p className="text-[10px] font-black uppercase tracking-wider text-amber-900">수리 업체 제출</p>
+                                <dl className="space-y-1.5 text-[11px]">
+                                  <div>
+                                    <dt className="text-slate-500 font-semibold">내방 일자</dt>
+                                    <dd className="font-bold text-slate-900">
+                                      {b.site_visit_date ? String(b.site_visit_date).slice(0, 10) : "—"}
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt className="text-slate-500 font-semibold">최종견적액</dt>
+                                    <dd className="font-bold text-slate-900">
+                                      {b.final_bid_amount != null ? `${Number(b.final_bid_amount).toLocaleString()}원` : "—"}
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt className="text-slate-500 font-semibold">최초 대비 변동 사유</dt>
+                                    <dd className="text-slate-800 whitespace-pre-wrap">{b.variance_reason?.trim() || "—"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt className="text-slate-500 font-semibold">업체 현장 메모·의견</dt>
+                                    <dd className="text-slate-800 whitespace-pre-wrap">{b.contractor_extra_note?.trim() || "—"}</dd>
+                                  </div>
+                                  <div className="pt-1 text-[10px] text-amber-900 font-semibold">
+                                    {b.contractor_progress_locked_at ? "업체 제출 완료(잠금)" : "업체 미제출 또는 미잠금"}
+                                  </div>
+                                </dl>
+                              </div>
+                              <div className="p-3 space-y-2 bg-sky-50/40">
+                                <p className="text-[10px] font-black uppercase tracking-wider text-sky-900">수리 의뢰인 확인</p>
+                                <dl className="space-y-1.5 text-[11px]">
+                                  <div>
+                                    <dt className="text-slate-500 font-semibold">확인 내방 일자</dt>
+                                    <dd className="font-bold text-slate-900">
+                                      {b.requester_site_visit_date ? String(b.requester_site_visit_date).slice(0, 10) : "—"}
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt className="text-slate-500 font-semibold">확인 최종견적액</dt>
+                                    <dd className="font-bold text-slate-900">
+                                      {b.requester_final_bid_amount != null
+                                        ? `${Number(b.requester_final_bid_amount).toLocaleString()}원`
+                                        : "—"}
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt className="text-slate-500 font-semibold">의뢰인 변동·참고 메모</dt>
+                                    <dd className="text-slate-800 whitespace-pre-wrap">{b.requester_variance_note?.trim() || "—"}</dd>
+                                  </div>
+                                  <div>
+                                    <dt className="text-slate-500 font-semibold">의뢰인 현장 후기</dt>
+                                    <dd className="text-slate-800 whitespace-pre-wrap">{b.requester_visit_review?.trim() || "—"}</dd>
+                                  </div>
+                                  <div className="pt-1 text-[10px] text-sky-900 font-semibold">
+                                    {b.requester_progress_locked_at ? "의뢰인 제출 완료(잠금)" : "의뢰인 미제출 또는 미잠금"}
+                                  </div>
+                                </dl>
+                              </div>
                             </div>
-                            <div className="text-[11px]">
-                              의뢰인 내방: {b.requester_site_visit_date ? String(b.requester_site_visit_date).slice(0, 10) : "—"}{" "}
-                              · 확인 최종액:{" "}
-                              {b.requester_final_bid_amount != null
-                                ? `${Number(b.requester_final_bid_amount).toLocaleString()}원`
-                                : "—"}{" "}
-                              {b.requester_progress_locked_at ? "(의뢰인 제출완료)" : ""}
-                            </div>
-                            {b.requester_visit_review ? (
-                              <div className="text-[11px] text-slate-600">후기: {b.requester_visit_review}</div>
-                            ) : null}
                           </div>
                         ))}
                       </td>
@@ -778,9 +827,35 @@ export default function AdminPage() {
 
       {activeTab === "ops" && isMasterAdmin && <section className="bg-white border rounded-2xl p-5 space-y-4">
         <h2 className="text-xl font-bold">첫 화면 팝업 (알림 배포)</h2>
+        <p className="text-sm text-slate-600">
+          새 팝업을 배포하면 기존 ON 항목은 자동으로 꺼집니다. 신규 등록 없이 팝업만 끄려면 아래 &quot;활성 팝업 전체 끄기&quot;를 사용하세요.
+        </p>
         <input value={popTitle} onChange={(e) => setPopTitle(e.target.value)} placeholder="제목 (선택)" className="w-full border rounded-lg px-3 py-2 text-sm" />
         <textarea value={popMessage} onChange={(e) => setPopMessage(e.target.value)} placeholder="팝업 본문" className="w-full border rounded-lg px-3 py-2 text-sm min-h-[100px]" />
-        <button onClick={deploySitePopup} className="px-4 py-2 rounded-lg bg-indigo-600 text-white font-semibold text-sm">배포하기</button>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={deploySitePopup} className="px-4 py-2 rounded-lg bg-indigo-600 text-white font-semibold text-sm">배포하기</button>
+          <button
+            type="button"
+            onClick={async () => {
+              if (!window.confirm("첫 화면에 표시 중인 팝업(활성)을 모두 끕니다. 계속할까요?")) return;
+              await runAction("팝업을 끄는 중...", async () => {
+                const res = await fetch(`${baseUrl}/api/admin/site-announcements/deactivate-all`, {
+                  method: "POST",
+                  headers: authHeader(token),
+                  body: JSON.stringify({}),
+                });
+                const json = await res.json();
+                if (!res.ok) return alert(json.detail || "처리 실패");
+                const n = json.data?.deactivated_count ?? 0;
+                alert(n > 0 ? `활성 팝업 ${n}건을 껐습니다.` : "활성화된 팝업이 없었습니다.");
+                await fetchAll(token);
+              });
+            }}
+            className="px-4 py-2 rounded-lg border-2 border-slate-700 text-slate-800 font-semibold text-sm hover:bg-slate-50"
+          >
+            활성 팝업 전체 끄기
+          </button>
+        </div>
         <ul className="space-y-2 text-sm">
           {popAnnouncements.map((a) => (
             <li key={a.id} className="flex items-center justify-between border rounded p-2">

@@ -338,23 +338,15 @@ export default function RequestDetailPage() {
 
                 {reqData.status === 'matched' && bid.is_selected && (
                   <div className="mt-6 space-y-4 border-t border-slate-100 pt-6">
-                    {(bid.site_visit_date || bid.final_bid_amount != null) && (
-                      <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 text-sm space-y-2">
-                        <p className="text-xs font-black text-slate-500 uppercase">업체가 제출한 정보</p>
-                        {bid.site_visit_date ? (
-                          <p><span className="font-bold text-slate-600">내방 일자:</span> {String(bid.site_visit_date).slice(0, 10)}</p>
-                        ) : null}
-                        {bid.final_bid_amount != null ? (
-                          <p><span className="font-bold text-slate-600">최종견적액:</span> {Number(bid.final_bid_amount).toLocaleString()}원</p>
-                        ) : null}
-                        {bid.variance_reason ? (
-                          <p><span className="font-bold text-slate-600">변동 사유:</span> {bid.variance_reason}</p>
-                        ) : null}
-                        {bid.contractor_extra_note ? (
-                          <p><span className="font-bold text-slate-600">업체 메모:</span> {bid.contractor_extra_note}</p>
-                        ) : null}
-                      </div>
-                    )}
+                    <p className="text-xs text-slate-600 leading-relaxed bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
+                      내방 일정·최종견적 등은 <span className="font-bold">본인이 현장에서 확인한 내용</span>을 입력해 주세요.
+                      업체가 플랫폼에 제출한 최종견적·내방 정보와의 대조는 운영 관리자만 확인합니다.
+                    </p>
+                    {bid.contractor_final_submitted === false ? (
+                      <p className="text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                        해당 업체의 최종 정보 제출이 아직 완료되지 않았을 수 있습니다. 필요 시 업체와 일정을 확인해 주세요.
+                      </p>
+                    ) : null}
                     <div className="rounded-2xl border border-blue-200 bg-blue-50/50 p-5 space-y-3">
                       <p className="font-black text-slate-900 text-sm">내 확인 사항 (선정 업체)</p>
                       {bid.requester_progress_locked_at ? (
