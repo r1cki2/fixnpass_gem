@@ -43,6 +43,10 @@ export default function SignupPage() {
   const [message, setMessage] = useState("");
   const [nameError, setNameError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [agreeAge14, setAgreeAge14] = useState(false);
+  const [agreeTerms, setAgreeTerms] = useState(false);
+  const [agreePrivacyCollect, setAgreePrivacyCollect] = useState(false);
+  const [agreeThirdParty, setAgreeThirdParty] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -80,6 +84,10 @@ export default function SignupPage() {
     }
     if (password !== passwordConfirm) {
       setMessage("비밀번호 확인이 일치하지 않습니다.");
+      return;
+    }
+    if (!agreeAge14 || !agreeTerms || !agreePrivacyCollect || !agreeThirdParty) {
+      setMessage("필수 항목(만 14세 이상 및 약관 동의)에 모두 체크해주세요.");
       return;
     }
 
@@ -136,6 +144,7 @@ export default function SignupPage() {
     const cleanPhone = normalizeDigits(phoneNumber);
     const cleanOfficePhone = normalizeDigits(officePhoneNumber);
 
+    const agreementsAcceptedAt = new Date().toISOString();
     const { error } = await supabase.auth.signUp({
       email,
       password,
@@ -151,6 +160,11 @@ export default function SignupPage() {
           company_name: role === "contractor" ? companyName.trim() : null,
           region: role === "contractor" ? region.trim() : null,
           verification_status: "pending",
+          signup_age_14_confirmed: true,
+          signup_service_terms_agreed: true,
+          signup_privacy_collection_agreed: true,
+          signup_privacy_third_party_agreed: true,
+          signup_agreements_accepted_at: agreementsAcceptedAt,
         },
       },
     });
@@ -255,6 +269,91 @@ export default function SignupPage() {
             </button>
           </div>
         </div>
+
+        <div
+          className="rounded-lg border border-gray-200 bg-gray-50/80 p-4 space-y-3 min-w-0"
+          role="group"
+          aria-labelledby="signup-consents-heading"
+        >
+          <h2 id="signup-consents-heading" className="text-sm font-semibold text-gray-800">
+            필수 동의
+          </h2>
+          <label className="flex items-start gap-2 text-sm text-gray-800 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={agreeAge14}
+              onChange={(e) => setAgreeAge14(e.target.checked)}
+              className="mt-1 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span>
+              <span className="text-rose-600 font-semibold">[필수]</span> 만 14세 이상입니다.
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm text-gray-800 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={agreeTerms}
+              onChange={(e) => setAgreeTerms(e.target.checked)}
+              className="mt-1 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span>
+                <span className="text-rose-600 font-semibold">[필수]</span> 서비스 이용약관 동의
+              </span>
+              <Link
+                href="/legal/service-terms"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 font-semibold hover:underline text-xs"
+              >
+                [상세보기]
+              </Link>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm text-gray-800 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={agreePrivacyCollect}
+              onChange={(e) => setAgreePrivacyCollect(e.target.checked)}
+              className="mt-1 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span>
+                <span className="text-rose-600 font-semibold">[필수]</span> 개인정보 수집 및 이용 동의
+              </span>
+              <Link
+                href="/legal/privacy-collection"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 font-semibold hover:underline text-xs"
+              >
+                [상세보기]
+              </Link>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm text-gray-800 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={agreeThirdParty}
+              onChange={(e) => setAgreeThirdParty(e.target.checked)}
+              className="mt-1 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span>
+                <span className="text-rose-600 font-semibold">[필수]</span> 개인정보 제3자 제공 동의
+              </span>
+              <Link
+                href="/legal/privacy-third-party"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 font-semibold hover:underline text-xs"
+              >
+                [상세보기]
+              </Link>
+            </span>
+          </label>
+        </div>
+
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
             본인 이름 <span className="text-rose-600">(필수, 한글만)</span>
