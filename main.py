@@ -436,12 +436,14 @@ class BidSubmission(BaseModel):
     repair_request_id: int
     partner_id: str
     bid_amount: int
+    disclaimer_contractor_accepted: bool = False
 
 
 class MatchPartners(BaseModel):
     repair_request_id: int
     requester_id: str
     selected_bid_ids: List[int]
+    disclaimer_requester_accepted: bool = False
 
 
 class ContractorBidFinal(BaseModel):
@@ -460,6 +462,16 @@ class RequesterBidFields(BaseModel):
     requester_final_bid_amount: int
     requester_variance_note: Optional[str] = None
     requester_visit_review: Optional[str] = None
+
+
+class AccountWithdrawBody(BaseModel):
+    confirm_email: str
+
+
+WITHDRAWAL_BLOCK_MESSAGE = (
+    "업체 선택 이후 진행 중인 견적이 있습니다. 내방·최종견적액·후기(추후 잔금 납부 포함) 등록이 "
+    "모두 완료되기 전에는 회원 탈퇴가 제한됩니다. 탈퇴를 원하시면 고객 문의를 통해 관리자에게 연락해 주세요."
+)
 
 
 class AdminUserRoleUpdate(BaseModel):
@@ -2053,6 +2065,189 @@ async def update_my_profile(body: MyProfileUpdate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _bid_post_match_flow_complete(b: dict) -> bool:
+    """업체·의뢰인 내방/최종견적 확인 제출이 모두 잠긴 상태."""
+    return bool(b.get("contractor_progress_locked_at") and b.get("requester_progress_locked_at"))
+
+
+def _withdrawal_blocked_pending_match(user_id: str, role: Optional[str]) -> tuple[bool, str]:
+    """
+    matched/repairing 이고 선정 견적 중 하나라도 양측 제출이 완료되지 않았으면 탈퇴 불가.
+    completed 는 항상 탈퇴 허용.
+    """
+    if role == "requester":
+        res = (
+            supabase.table("repair_requests")
+            .select("repair_request_id, status, selected_bid_ids")
+            .eq("requester_id", user_id)
+            .in_("status", ["matched", "repairing"])
+            .execute()
+        )
+        for r in res.data or []:
+            sel = r.get("selected_bid_ids") or []
+            if not sel:
+                continue
+            bids_res = (
+                supabase.table("bids")
+                .select("bid_id, contractor_progress_locked_at, requester_progress_locked_at")
+                .in_("bid_id", sel)
+                .execute()
+            )
+            for b in bids_res.data or []:
+                if not _bid_post_match_flow_complete(b):
+                    return True, WITHDRAWAL_BLOCK_MESSAGE
+    elif role == "contractor":
+        bres = (
+            supabase.table("bids")
+            .select("bid_id, repair_request_id")
+            .eq("partner_id", user_id)
+            .execute()
+        )
+        rid_to_bids: dict[int, list[int]] = defaultdict(list)
+        for b in bres.data or []:
+            rid = b.get("repair_request_id")
+            bid_id = b.get("bid_id")
+            if rid is not None and bid_id is not None:
+                rid_to_bids[int(rid)].append(int(bid_id))
+        if not rid_to_bids:
+            return False, ""
+        rr = (
+            supabase.table("repair_requests")
+            .select("repair_request_id, status, selected_bid_ids")
+            .in_("repair_request_id", list(rid_to_bids.keys()))
+            .in_("status", ["matched", "repairing"])
+            .execute()
+        )
+        for r in rr.data or []:
+            rid = int(r["repair_request_id"])
+            sel = set(int(x) for x in (r.get("selected_bid_ids") or []) if x is not None)
+            for bid_id in rid_to_bids.get(rid, []):
+                if bid_id not in sel:
+                    continue
+                one = (
+                    supabase.table("bids")
+                    .select("contractor_progress_locked_at, requester_progress_locked_at")
+                    .eq("bid_id", bid_id)
+                    .limit(1)
+                    .execute()
+                )
+                if one.data and not _bid_post_match_flow_complete(one.data[0]):
+                    return True, WITHDRAWAL_BLOCK_MESSAGE
+    return False, ""
+
+
+def _remove_repair_request_pdfs(row: dict) -> None:
+    try:
+        if row.get("original_pdf_path"):
+            supabase.storage.from_(ORIGINAL_BUCKET).remove([row["original_pdf_path"]])
+    except Exception:
+        pass
+    try:
+        if row.get("masked_pdf_path"):
+            supabase.storage.from_(MASKED_BUCKET).remove([row["masked_pdf_path"]])
+    except Exception:
+        pass
+
+
+def _purge_user_self_service_data(user_id: str, role: str) -> None:
+    """Auth 삭제 전 DB·스토리지 정리 (의뢰인: 요청 전부 삭제, 업체: 본인 견적만 삭제)."""
+    if role == "requester":
+        reqs = (
+            supabase.table("repair_requests")
+            .select("repair_request_id, original_pdf_path, masked_pdf_path")
+            .eq("requester_id", user_id)
+            .execute()
+        )
+        for r in reqs.data or []:
+            rid = r.get("repair_request_id")
+            _remove_repair_request_pdfs(r)
+            if rid is not None:
+                supabase.table("bids").delete().eq("repair_request_id", rid).execute()
+                supabase.table("repair_requests").delete().eq("repair_request_id", rid).execute()
+    elif role == "contractor":
+        supabase.table("bids").delete().eq("partner_id", user_id).execute()
+    try:
+        supabase.table("inquiry_replies").delete().eq("author_id", user_id).execute()
+    except Exception:
+        pass
+    try:
+        supabase.table("inquiry_followups").delete().eq("author_id", user_id).execute()
+    except Exception:
+        pass
+    try:
+        inv = supabase.table("inquiries").select("id").eq("author_id", user_id).execute()
+        for row in inv.data or []:
+            iid = row.get("id")
+            if iid is not None:
+                supabase.table("inquiries").delete().eq("id", iid).execute()
+    except Exception:
+        pass
+    try:
+        supabase.table("partner_ratings").delete().eq("partner_id", user_id).execute()
+    except Exception:
+        pass
+    try:
+        supabase.table("admin_roles").delete().eq("user_id", user_id).execute()
+    except Exception:
+        pass
+    try:
+        supabase.table("partner_profiles").delete().eq("partner_id", user_id).execute()
+    except Exception:
+        pass
+    try:
+        supabase.table("profiles").delete().eq("id", user_id).execute()
+    except Exception as e:
+        logging.warning("profiles delete on self-withdraw: %s", str(e))
+
+
+@app.get("/api/me/withdrawal-eligibility")
+async def withdrawal_eligibility(authorization: Optional[str] = Header(default=None)):
+    u = _require_authenticated_user(authorization)
+    prof = _get_profile(u["id"])
+    role = (prof or {}).get("role")
+    blocked, msg = _withdrawal_blocked_pending_match(u["id"], role)
+    return {
+        "status": "success",
+        "data": {
+            "blocked": blocked,
+            "message": msg if blocked else "",
+            "role": role,
+        },
+    }
+
+
+@app.post("/api/me/withdraw")
+async def withdraw_my_account(
+    body: AccountWithdrawBody,
+    authorization: Optional[str] = Header(default=None),
+):
+    u = _require_authenticated_user(authorization)
+    em = (body.confirm_email or "").strip().lower()
+    if em != (u.get("email") or ""):
+        raise HTTPException(status_code=400, detail="입력한 이메일이 로그인 계정과 일치하지 않습니다.")
+    if MASTER_ADMIN_EMAIL and em == MASTER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="마스터 관리자 계정은 이 경로로 탈퇴할 수 없습니다.")
+    prof = _get_profile(u["id"])
+    if not prof:
+        raise HTTPException(status_code=404, detail="프로필을 찾을 수 없습니다.")
+    role = prof.get("role") or ""
+    if role not in ("requester", "contractor"):
+        raise HTTPException(status_code=400, detail="지원하지 않는 계정 유형입니다.")
+    blocked, msg = _withdrawal_blocked_pending_match(u["id"], role)
+    if blocked:
+        raise HTTPException(status_code=409, detail=msg)
+    uid = u["id"]
+    try:
+        _purge_user_self_service_data(uid, role)
+        supabase.auth.admin.delete_user(uid)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("self withdraw failed")
+        raise HTTPException(status_code=500, detail=f"탈퇴 처리 중 오류가 발생했습니다: {str(e)}")
+    return {"status": "success"}
+
+
 def _has_active_duplicate_company(company_name: str, exclude_user_id: Optional[str] = None) -> bool:
     nm = (company_name or "").strip()
     if not nm:
@@ -2458,6 +2653,11 @@ async def submit_bid(bid: BidSubmission):
     try:
         _rate_limit("submit_bid", bid.partner_id)
         _require_active_role(bid.partner_id, ["contractor"], "contractor")
+        if not bid.disclaimer_contractor_accepted:
+            raise HTTPException(
+                status_code=400,
+                detail="면책 고지에 동의해야 견적을 제출할 수 있습니다.",
+            )
         req_res = (
             supabase.table("repair_requests")
             .select("status")
@@ -2562,6 +2762,11 @@ async def match_partners(data: MatchPartners):
     try:
         _rate_limit("match_partners", data.requester_id)
         _require_active_role(data.requester_id, ["requester"], "requester")
+        if data.selected_bid_ids and not data.disclaimer_requester_accepted:
+            raise HTTPException(
+                status_code=400,
+                detail="면책 고지에 동의해야 업체를 선택할 수 있습니다.",
+            )
         if len(data.selected_bid_ids) > 2:
             raise HTTPException(status_code=400, detail="최대 2개 업체만 가능")
         (

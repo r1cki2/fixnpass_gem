@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import AddressSearchInput from "@/components/AddressSearchInput";
 import InterestRegionPicker from "@/components/InterestRegionPicker";
@@ -14,6 +15,7 @@ import {
 } from "@/lib/validation";
 
 export default function MyPage() {
+  const router = useRouter();
   const [userId, setUserId] = useState<string | null>(null);
   const [role, setRole] = useState<"requester" | "contractor" | null>(null);
   const [name, setName] = useState("");
@@ -27,6 +29,10 @@ export default function MyPage() {
   const [years, setYears] = useState("");
   const [employees, setEmployees] = useState("");
   const [loading, setLoading] = useState(true);
+  const [withdrawBlocked, setWithdrawBlocked] = useState(false);
+  const [withdrawMessage, setWithdrawMessage] = useState("");
+  const [withdrawEmail, setWithdrawEmail] = useState("");
+  const [withdrawBusy, setWithdrawBusy] = useState(false);
 
   useEffect(() => {
     const run = async () => {
@@ -62,6 +68,25 @@ export default function MyPage() {
     };
     run();
   }, []);
+
+  useEffect(() => {
+    const loadWithdraw = async () => {
+      if (!userId) return;
+      const { data: { session } } = await supabase.auth.getSession();
+      const tok = session?.access_token;
+      if (!tok) return;
+      const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+      const res = await fetch(`${baseUrl}/api/me/withdrawal-eligibility`, {
+        headers: { Authorization: `Bearer ${tok}` },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.data) {
+        setWithdrawBlocked(Boolean(json.data.blocked));
+        setWithdrawMessage(json.data.message || "");
+      }
+    };
+    loadWithdraw();
+  }, [userId]);
 
   const save = async () => {
     if (!userId) return alert("로그인이 필요합니다.");
@@ -103,6 +128,50 @@ export default function MyPage() {
       });
     }
     alert("저장되었습니다.");
+  };
+
+  const withdrawAccount = async () => {
+    if (!userId) return;
+    if (withdrawBlocked) {
+      alert(withdrawMessage || "현재 탈퇴할 수 없습니다. 고객 문의를 이용해 주세요.");
+      return;
+    }
+    if (
+      !confirm(
+        "회원 탈퇴 시 프로필 등 개인정보가 삭제되며, 본인과 연결된 견적 요청·견적 제출 내역 등 서비스 데이터도 함께 삭제될 수 있습니다.\n\n정말 탈퇴하시겠습니까?"
+      )
+    ) {
+      return;
+    }
+    const { data: { session } } = await supabase.auth.getSession();
+    const tok = session?.access_token;
+    if (!tok) return alert("세션이 만료되었습니다. 다시 로그인해 주세요.");
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+    setWithdrawBusy(true);
+    try {
+      const res = await fetch(`${baseUrl}/api/me/withdraw`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tok}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ confirm_email: withdrawEmail.trim() }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        alert(json.detail || withdrawMessage || "관리자 확인이 필요합니다.");
+        return;
+      }
+      if (!res.ok) {
+        alert(json.detail || "탈퇴 처리에 실패했습니다.");
+        return;
+      }
+      await supabase.auth.signOut();
+      alert("탈퇴가 완료되었습니다.");
+      router.replace("/");
+    } finally {
+      setWithdrawBusy(false);
+    }
   };
 
   if (loading) return <div className="p-10">로딩 중...</div>;
@@ -170,6 +239,41 @@ export default function MyPage() {
         <button onClick={save} className="w-full bg-slate-900 text-white py-3 rounded-lg font-bold">
           저장
         </button>
+      </div>
+
+      <div className="mt-8 bg-rose-50 border border-rose-200 rounded-2xl p-6 space-y-4">
+        <h2 className="text-lg font-black text-rose-900">회원 탈퇴</h2>
+        <p className="text-sm text-rose-900/90 leading-relaxed">
+          탈퇴 시 이름·연락처·주소 등 개인정보는 삭제되며, 본인 계정과 연결된 견적 요청·견적 제출 등 이용 기록도 삭제됩니다.
+        </p>
+        {withdrawBlocked ? (
+          <div className="rounded-xl bg-white border border-amber-300 px-4 py-3 text-sm text-amber-950 font-medium leading-relaxed">
+            {withdrawMessage ||
+              "진행 중인 건으로 인해 바로 탈퇴할 수 없습니다. 고객 문의를 통해 관리자에게 연락해 주세요."}
+          </div>
+        ) : (
+          <>
+            <p className="text-xs text-slate-600">
+              로그인에 사용 중인 이메일을 아래에 입력한 뒤 탈퇴를 진행해 주세요.
+            </p>
+            <input
+              type="email"
+              value={withdrawEmail}
+              onChange={(e) => setWithdrawEmail(e.target.value)}
+              placeholder="가입 이메일"
+              className="w-full border border-rose-200 rounded-lg px-3 py-2 text-sm"
+              autoComplete="off"
+            />
+            <button
+              type="button"
+              disabled={withdrawBusy}
+              onClick={withdrawAccount}
+              className="w-full py-3 rounded-lg border-2 border-rose-700 text-rose-800 font-bold text-sm hover:bg-rose-100 disabled:opacity-50"
+            >
+              {withdrawBusy ? "처리 중…" : "회원 탈퇴 진행"}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, CheckCircle2, DollarSign, Send, Loader2, Info, AlertTriangle, Lock, Phone, Building2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import LiabilityDisclaimerModal from '@/components/LiabilityDisclaimerModal';
 
 const FINAL_CONTRACT_DISCLAIMER =
   "내방 후 제출하신 최종견적에 따라 최종 계약까지 이루어지지 않을 수 있습니다. 내방 일정 수립 및 내방 후 최종견적액 산정 전 주의 부탁드립니다.";
@@ -33,6 +34,7 @@ export default function ContractorBidPage() {
   const [progVar, setProgVar] = useState("");
   const [progExtra, setProgExtra] = useState("");
   const [savingProgress, setSavingProgress] = useState(false);
+  const [showLiabilityBid, setShowLiabilityBid] = useState(false);
 
   const loadDetail = useCallback(async () => {
     try {
@@ -150,14 +152,17 @@ export default function ContractorBidPage() {
     }
     
     if (!toDigits(amount)) return alert('견적 금액을 입력해주세요.');
+    setShowLiabilityBid(true);
+  };
 
+  const executeBidSubmitAfterLiability = async () => {
+    if (!partnerId) return;
     if (!hasBid) {
       const ok = confirm(
         `${FINAL_CONTRACT_DISCLAIMER}\n\n최초 견적을 제출하시겠습니까?`
       );
       if (!ok) return;
     }
-    
     setIsSubmitting(true);
     try {
       const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
@@ -167,7 +172,8 @@ export default function ContractorBidPage() {
         body: JSON.stringify({
           repair_request_id: Number(requestId),
           partner_id: partnerId,
-          bid_amount: Number(toDigits(amount))
+          bid_amount: Number(toDigits(amount)),
+          disclaimer_contractor_accepted: true,
         })
       });
 
@@ -442,6 +448,12 @@ export default function ContractorBidPage() {
           </div>
         </div>
       </div>
+      <LiabilityDisclaimerModal
+        open={showLiabilityBid}
+        variant="contractor"
+        onClose={() => setShowLiabilityBid(false)}
+        onAgreed={() => void executeBidSubmitAfterLiability()}
+      />
     </div>
   );
 }

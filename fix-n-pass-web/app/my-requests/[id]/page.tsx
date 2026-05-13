@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { Building2, Clock, CheckSquare, ArrowLeft, Receipt, Star, Phone, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import LiabilityDisclaimerModal from '@/components/LiabilityDisclaimerModal';
 
 export default function RequestDetailPage() {
   const params = useParams();
@@ -20,6 +21,7 @@ export default function RequestDetailPage() {
   const [requesterFields, setRequesterFields] = useState<
     Record<number, { visit: string; amount: string; variance: string; review: string }>
   >({});
+  const [showMatchLiability, setShowMatchLiability] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -88,8 +90,13 @@ export default function RequestDetailPage() {
     return Number(d).toLocaleString("ko-KR");
   };
 
-  const handleMatch = async () => {
+  const handleMatch = () => {
     if (!userId) return alert('로그인이 필요합니다.');
+    setShowMatchLiability(true);
+  };
+
+  const executeMatchAfterLiability = async () => {
+    if (!userId) return;
     if (selectedIds.length === 1) {
       const ok = confirm(
         "수리 업체의 과도한 현장방문을 방지하고자 최대 2개 업체 까지만 선택 가능하며, 1개만 선택하신 경우 추후 추가 선택은 불가합니다. 신중히 선택해주세요.\n\n선택한 1개 업체로 최종 매칭을 진행할까요?"
@@ -103,7 +110,8 @@ export default function RequestDetailPage() {
       body: JSON.stringify({
         repair_request_id: Number(requestId),
         requester_id: userId,
-        selected_bid_ids: selectedIds
+        selected_bid_ids: selectedIds,
+        disclaimer_requester_accepted: true,
       })
     });
     
@@ -437,6 +445,12 @@ export default function RequestDetailPage() {
           </div>
         )}
       </div>
+      <LiabilityDisclaimerModal
+        open={showMatchLiability}
+        variant="requester"
+        onClose={() => setShowMatchLiability(false)}
+        onAgreed={() => void executeMatchAfterLiability()}
+      />
     </div>
   );
 }
