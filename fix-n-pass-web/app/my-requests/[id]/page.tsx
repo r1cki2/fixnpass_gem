@@ -356,7 +356,7 @@ export default function RequestDetailPage() {
                       </p>
                     ) : null}
                     <div className="rounded-2xl border border-blue-200 bg-blue-50/50 p-5 space-y-3">
-                      <p className="font-black text-slate-900 text-sm">내 확인 사항 (선정 업체)</p>
+                      <p className="font-black text-slate-900 text-sm">최종 견적·현장 내방 정보 등록</p>
                       {bid.requester_progress_locked_at ? (
                         <p className="text-xs font-semibold text-slate-600 bg-white/80 border border-slate-200 rounded-lg px-3 py-2">
                           제출이 완료되어 이 항목은 더 이상 수정할 수 없습니다.
