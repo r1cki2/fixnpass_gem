@@ -498,8 +498,9 @@ export default function SignupPage() {
                 />
               </div>
             </div>
-            <p className="text-xs text-slate-500">
-              업력/직원수는 선택 입력이며, 입력 시 의뢰인이 업체 선택 전에 참고 정보로 확인할 수 있습니다.
+            <p className="text-xs text-slate-500 leading-relaxed break-words">
+              업력 및 직원수는 의뢰인들께 참고를 위해서만 공유됩니다. 사실과 다름으로 생기는 문제, 불이익에 대해
+              픽스앤패스는 책임지지 않으므로, 정확하게 기입 부탁드립니다.
             </p>
             {requireApproval && (
               <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800">
