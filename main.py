@@ -1839,10 +1839,12 @@ async def get_partner_profile(
             display_company = _masked_partner_label(partner_id, request_id or 0)
             phone_disp = "비공개"
             office_disp = "비공개"
+            location_disp = None
         else:
             display_company = base_company
             phone_disp = profile.get("phone_number") or "미등록"
             office_disp = profile.get("office_phone_number") or "미등록"
+            location_disp = extra.get("business_location")
 
         return {
             "status": "success",
@@ -1853,9 +1855,12 @@ async def get_partner_profile(
                 "display_company_masked": mask,
                 "phone_number": phone_disp,
                 "office_phone_number": office_disp,
+                "business_location": location_disp,
+                "service_regions": extra.get("service_regions") or [],
+                "years_experience": extra.get("years_experience"),
+                "employee_count": extra.get("employee_count"),
                 "avg_rating": float(rating.get("avg_rating", 0)),
                 "review_count": int(rating.get("review_count", 0)),
-                **extra,
             },
         }
     except HTTPException as e:

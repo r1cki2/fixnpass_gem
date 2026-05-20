@@ -31,6 +31,8 @@ export default function OnboardingPage() {
   const [recommendedRegions, setRecommendedRegions] = useState<string[]>([]);
   const [requesterAddress, setRequesterAddress] = useState("");
   const [buildingRole, setBuildingRole] = useState<"owner" | "manager" | "">("");
+  const [years, setYears] = useState("");
+  const [employees, setEmployees] = useState("");
 
   // 화면 진입 시 현재 로그인된 유저 ID 확인
   useEffect(() => {
@@ -191,6 +193,8 @@ export default function OnboardingPage() {
           office_phone_number: normalizeDigits(officePhoneNumber),
           business_location: region.trim(),
           service_regions: serviceRegionsPayload,
+          years_experience: years ? Number(years) : null,
+          employee_count: employees ? Number(employees) : null,
         }),
       });
       if (!profileRes.ok) {
@@ -372,6 +376,32 @@ export default function OnboardingPage() {
                 </div>
               )}
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">업력(년) (선택)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={years}
+                  onChange={(e) => setYears(e.target.value)}
+                  className="w-full px-4 py-3 border rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">직원수 (선택)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={employees}
+                  onChange={(e) => setEmployees(e.target.value)}
+                  className="w-full px-4 py-3 border rounded-lg"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-slate-500 leading-relaxed break-words">
+              업력 및 직원수는 의뢰인들께 참고를 위해서만 공유됩니다. 사실과 다름으로 생기는 문제, 불이익에 대해
+              픽스앤패스는 책임지지 않으므로, 정확하게 기입 부탁드립니다.
+            </p>
           </>
         )}
 
